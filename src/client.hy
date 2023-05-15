@@ -6,27 +6,46 @@
 (import queue)
 (import re)
 
-(defmacro unless [expr body]
-	`(if (not ~expr)
+(defmacro *if [expr body]
+	`(if ~expr
 		~body
 		`()))
 
-(defmacro if-match [pattern string body]
+(defmacro unless [expr body]
+	`(*if (not ~expr)
+		~body))
+
+(defmacro *if-match [pattern string body]
 	`(do
 		(setv regex-matches (re.match ~pattern ~string))
-		(if (not regex-matches)
-			`()
+		(*if regex-matches
 			(do
 				~body
 				(return)))))
 
-(setv **token** (.read (open "token.txt" "r")))
+(defmacro if-match [pattern string pos-body neg-body]
+	`(do
+		(setv regex-matches (re.match ~pattern ~string))
+		(if regex-matches
+			(do
+				~pos-body
+				(return))
+			(do
+				~neg-body
+				(return)))))
+
+(defmacro read-file [path]
+    `(.strip (.read (open ~path "r"))))
+
+(setv **token** (read-file "token.txt"))
+(setv **host** (read-file "host.txt"))
+(setv **help** (.split (read-file "help.txt") "\n"))
 (setv work (queue.Queue))
 
 (defclass IRCWorker [threading.Thread] 
 	(defn __init__ [self] 
 		(setv self.sock (socket.socket socket.AF_INET socket.SOCK_STREAM)) 
-		(setv self.host "bellowsroryb") 
+		(setv self.host **host**) 
 		(setv self.running False)
 		(setv self.joined False)
 		(threading.Thread.__init__ self))
@@ -48,8 +67,8 @@
 						(break)))
 				(setv lines (data.split "\n"))
 				(for [line lines]
-                    (unless (not line)
-					    (self.process (line.strip))))
+					(unless (not line)
+						(self.process (line.strip))))
 				(except [e [socket.error json.decoder.JSONDecodeError]]
 					(print "ERROR: " (repr e))
 					(setv running False))
@@ -63,19 +82,43 @@
 	(defn privmsg [self data]
 		(self.send f"PRIVMSG #{self.host} :{data}"))
 
+	(defn reply-to [self user msg]
+		(self.privmsg f"@{user} {msg}"))
+
+	(defn invalid-command [self cmd]
+		(self.privmsg f"Sorry, I can't understand \"{cmd}\""))
+
 	(defn process [self line]
 		(print (+ "< " line))
-		(if (= line "PING :tmi.twitch.tv")
+		(if (.startswith line "PING")
 			(self.send "PONG :tmi.twitch.tv")
 			(if self.joined
 				(do
-					(if-match f"^@(.*)\\s:tmi\\.twitch\\.tv (\\S+)(\\s#{self.host})?" line
+					(*if-match f"^@(.*)\\s:tmi\\.twitch\\.tv (\\S+)(\\s#{self.host})?" line
 						(do 
 							`()))
-					(if-match f"^@(.*)\\s:{self.host}!{self.host}@{self.host}\\.tmi\\.twitch\\.tv (\\S+) #{self.host} :(.*)$" line
-						(cond
-							(= (get regex-matches 2) "PRIVMSG")
-							(print (get regex-matches 3)))))
+					(*if-match f"^@(.*)\\s:(\\S+)!\\S+@\\S+\\.tmi\\.twitch\\.tv (\\S+) #{self.host} :(.*)$" line
+						(do
+							(setv user (get regex-matches 2))
+							(cond
+								(= (get regex-matches 3) "PRIVMSG")
+								(cond (.startswith (get regex-matches 4) "!")
+									(do
+										(setv command (.split (get regex-matches 4) " "))
+										(setv first-word (get command 0))
+										(cond
+                                            (= first-word "!help")
+                                            (for [line **help**]
+                                                (self.reply-to user line))
+											(= first-word "!bet")
+											(do
+												(assert (= (len command) 2))
+												(if-match r"^!bet \$?(\d+|\d{1,3}(,\d{3})*)(\.\d+)?\s(on )?(red|black|even|odd|((first|second|third|1st|2nd|3rd) (twelve|12))|((first|second|1st|2nd) half)|((first|second|third|1st|2nd|3rd) col(umn)?)|\d{1,2})?" (get regex-matches 4)
+													(do
+														;; check/deduct funs
+														;; update game/database
+														(self.reply-to user f"Your ${(get regex-matches 1)} bet has been placed!"))
+													(self.invalid-command (get regex-matches 4)))))))))))
 				(if (= f":{self.host}!{self.host}@{self.host}.tmi.twitch.tv JOIN #{self.host}" line)
 					(setv self.joined True)
 					`()))))
