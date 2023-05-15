@@ -35,7 +35,7 @@
 				(return)))))
 
 (defmacro read-file [path]
-    `(.strip (.read (open ~path "r"))))
+	`(.strip (.read (open ~path "r"))))
 
 (setv **token** (read-file "token.txt"))
 (setv **host** (read-file "host.txt"))
@@ -87,6 +87,28 @@
 
 	(defn invalid-command [self cmd]
 		(self.privmsg f"Sorry, I can't understand \"{cmd}\""))
+	
+	(defn parse [self matches]
+		(setv user (get matches 2))
+		(*if (and (.startswith (get matches 4) "!") (= (get matches 3) "PRIVMSG"))
+			(do
+				(setv command (.split (get matches 4) " "))
+				(setv first-word (get command 0))
+				(cond
+					(= first-word "!help")
+					(for [line **help**]
+						(self.reply-to user line))
+					(= first-word "!bet")
+					(do
+						(assert (= (len command) 2))
+						(if-match r"^!bet \$?(\d+|\d{1,3}(,\d{3})*)(\.\d+)?\s(on )?(red|black|even|odd|((first|second|third|1st|2nd|3rd) (twelve|12))|((first|second|1st|2nd) half)|((first|second|third|1st|2nd|3rd) col(umn)?)|\d{1,2})?" (get regex-matches 4)
+							(do
+								(setv bet (re.sub (get matches 1) r"[^\d]"))
+								(setv bet-string f"{bet:,}")
+								;; check/deduct funs
+								;; update game/database
+								(self.reply-to user f"Your ${(get matches 1)} bet has been placed!"))
+							(self.invalid-command (get matches 4))))))))
 
 	(defn process [self line]
 		(print (+ "< " line))
@@ -94,31 +116,10 @@
 			(self.send "PONG :tmi.twitch.tv")
 			(if self.joined
 				(do
-					(*if-match f"^@(.*)\\s:tmi\\.twitch\\.tv (\\S+)(\\s#{self.host})?" line
-						(do 
-							`()))
+					;; (*if-match f"^@(.*)\\s:tmi\\.twitch\\.tv (\\S+)(\\s#{self.host})?" line
+					;; 	`())
 					(*if-match f"^@(.*)\\s:(\\S+)!\\S+@\\S+\\.tmi\\.twitch\\.tv (\\S+) #{self.host} :(.*)$" line
-						(do
-							(setv user (get regex-matches 2))
-							(cond
-								(= (get regex-matches 3) "PRIVMSG")
-								(cond (.startswith (get regex-matches 4) "!")
-									(do
-										(setv command (.split (get regex-matches 4) " "))
-										(setv first-word (get command 0))
-										(cond
-                                            (= first-word "!help")
-                                            (for [line **help**]
-                                                (self.reply-to user line))
-											(= first-word "!bet")
-											(do
-												(assert (= (len command) 2))
-												(if-match r"^!bet \$?(\d+|\d{1,3}(,\d{3})*)(\.\d+)?\s(on )?(red|black|even|odd|((first|second|third|1st|2nd|3rd) (twelve|12))|((first|second|1st|2nd) half)|((first|second|third|1st|2nd|3rd) col(umn)?)|\d{1,2})?" (get regex-matches 4)
-													(do
-														;; check/deduct funs
-														;; update game/database
-														(self.reply-to user f"Your ${(get regex-matches 1)} bet has been placed!"))
-													(self.invalid-command (get regex-matches 4)))))))))))
+						(self.parse regex-matches)))
 				(if (= f":{self.host}!{self.host}@{self.host}.tmi.twitch.tv JOIN #{self.host}" line)
 					(setv self.joined True)
 					`()))))
