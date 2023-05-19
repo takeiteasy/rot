@@ -1,3 +1,5 @@
 *.txt
 test/
 .DS_Store
+*.py
+src/__pycache__
