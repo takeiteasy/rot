@@ -4,6 +4,7 @@
 (import json)
 (import re)
 (import redis)
+(import queue)
 (import twitchAPI [Twitch])
 (import twitchAPI.oauth [UserAuthenticator])
 (import twitchAPI.types [AuthScope ChatEvent])
@@ -17,6 +18,7 @@
 (setv **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT])
 (setv **host-channel** (read-file "host.txt"))
 (setv **db** (redis.Redis 'localhost' 6379 0))
+(setv **in-game** True)
 
 (defmacro unless [expr #* body]
   `(when (not ~expr)
@@ -54,20 +56,50 @@
   (defn __str__ [self]
     "You are not registered, type `!register` to start!"))
 
+(defmacro user-exist? [uid [table "leaderboard"]]
+  `(not (= (.zscore **db** ~table ~uid) None)))
+
+(defmacro if-user-exist? [uid pos-body neg-body]
+  `(do
+     (if (user-exist? ~uid)
+       ~pos-body
+       ~neg-body)))
+
+(defn clear-temporary-leaderboard []
+  (.delete **db** "leaderboard:tmp"))
+
+(defn user-main-balance [uid]
+  (if-user-exist? uid
+                  (int (.zscore **db** "leaderboard" uid))
+                  (raise InvalidUser)))
+
+(defn user-temporary-balance [uid]
+  (if (user-exist? uid "leaderboard:tmp")
+    (.zscore **db** "leaderboard:tmp" uid)
+    (let [balance (user-main-balance uid)]
+      (do
+        (.zadd **db** "leaderboard:tmp" {uid balance})
+        balance))))
+
+(defn user-balance [uid]
+  (if **in-game**
+    (user-temporary-balance uid)
+    (user-main-balance uid)))
+
 (defclass Bet []
   (defn __init__ [self user amount numbers]
     (setv self.user user)
     (setv self.amount amount)
-    (setv self.numbers numbers))
+    (setv self.numbers numbers)
+    (setv self.success False))
 
-  (defn validate [self] 
-    ;; TODO: Find user's balance
-    (setv tmp-total 101)
-    (when (= tmp-total 0)
-      (raise (InsufficientFundsError self.amount tmp-total)))
-    (when (> self.amount tmp-total)
-      (raise (InsufficientFundsError self.amount 0)))
-    True))
+  (defn validate [self]
+    (let [balance (user-balance self.user)]
+      (if (not balance)
+        (raise InvalidUser)
+        (if (> balance self.amount)
+          balance
+          (raise (InsufficientFundsError self.amount balance)))))))
 
 (defclass InsufficientFundsError [Exception]
   (defn __init__ [self amount total]
@@ -76,26 +108,18 @@
     (Exception.__init__ self))
 
   (defn __str__ [self]
-    (if (not self.total)
-      f"Sorry, you're bust!"
-      f"I can't place a bet for {self.amount}, you only have ${self.total}")))
+      f"Cannot place bet for `${self.amount}` you only have `${total}` available"))
 
 (defn/a on-ready [event]
   (print "Twitch client is ready!")
   (await (event.chat.join-room **host-channel**)))
 
-(defmacro if-user-exist? [uid pos-body neg-body]
-  `(do
-     (if (.exists **db** ~uid)
-       ~pos-body
-       ~neg-body)))
-
 (defn/a on-register [cmd]
   (if-user-exist? cmd.user.id
                   (await (cmd.reply f"You're already registered..."))
                   (do
-                    (.hmset **db** cmd.user.id {"balance" 100})
-                    (await (cmd.reply f"You're now registered!")))))
+                    (.zadd **db** "leaderboard" {cmd.user.id 1000})
+                    (await (cmd.reply f"You're now registered! You have a balance of $1000")))))
 
 (defn parse-bet [matches]
   (setv bet-value (re.sub r"[^\d]" "" (get matches 1)))
@@ -141,20 +165,43 @@
               (= "odd" string)    (range 1 37 2)))))
   #(bet-value bet-numbers))
 
+(setv **bets** (queue.Queue))
+
 (defn/a on-bet [cmd]
   (try
-    (if-user-exist? cmd.user.id
-                    (if (= (len cmd.parameter) 0)
-                      (raise (InvalidBet))
-                      (if-match cmd.parameter r"^[£\$]?(\d+|\d{1,3}(,\d{3})*)(\.\d+)?\s(on )?(red|black|even|odd|((first|second|third|1st|2nd|3rd) (twelve|12))|((first|second|1st|2nd) half)|((first|second|third|1st|2nd|3rd) col(umn)?)|\d{1,2})$"
-                                (let [bet-result (parse-bet regex-matches)
-                                      bet (Bet cmd.user.id (int (get bet-result 0)) (get bet-result 1))]
-                                  (bet.validate)
-                                  (await (cmd.reply f"Bet placed: {bet.amount}")))
-                                (raise (InvalidBet cmd.parameter))))
-                    (raise InvalidUser))
+    (if (= (len cmd.parameter) 0)
+      (raise (InvalidBet))
+      (if-match cmd.parameter r"^[£\$]?(\d+|\d{1,3}(,\d{3})*)(\.\d+)?\s(on )?(red|black|even|odd|((first|second|third|1st|2nd|3rd) (twelve|12))|((first|second|1st|2nd) half)|((first|second|third|1st|2nd|3rd) col(umn)?)|\d{1,2})$"
+                (let [bet-result (parse-bet regex-matches)
+                      bet (Bet cmd.user.id (int (get bet-result 0)) (get bet-result 1))
+                      balance (user-balance cmd.user.id)]
+                  (let [balance (- (.validate bet) bet.amount)]
+                    (do
+                      (.put **bets** bet)
+                      (.zadd **db** "leaderboard:tmp" {cmd.user.id balance})
+                      (await (cmd.reply f"Bet placed `{cmd.parameter}` you have ${balance} available")))))
+                (raise (InvalidBet cmd.parameter))))
     (except [e [InvalidBet InsufficientFundsError InvalidUser]]
             (await (cmd.reply (str e))))))
+
+(defn/a on-balance [cmd]
+  (try
+    (let [balance (user-main-balance cmd.user.id)
+          tmp-balance (user-temporary-balance cmd.user.id)]
+      (await (cmd.reply (if (= balance 0)
+                          "You're bust!"
+                          f"You have ${balance} in your account and ${tmp-balance} available"))))
+    (except [e InvalidUser]
+            (await (cmd.reply (str e))))))
+
+(defn/a resolve-bets [cmd]
+  (while (not (.empty **bets**))
+    (let [bet (.get **bets**)
+          balance (user-balance bet.user)]
+      (when bet.success
+        (.zadd **db** "leaderboard:tmp" (+ balance (* bet.amount 2))))))
+  (for [uid (.zrange **db** "leaderboard:tmp" 0 -1)]
+    (.zadd **db** "leaderboard" {(int uid) (int (.zscore **db** "leaderboard:tmp" (int uid)))})))
 
 (defn/a run [] 
   (let [twitch (await (Twitch **app-id** **app-secret**))
@@ -163,9 +210,13 @@
     (await (.set-user-authentication twitch (get tokens 0) **user-scope** (get tokens 1)))
     (let [chat (await (Chat twitch))]
       (do
+        (clear-temporary-leaderboard)
         (.register-event chat ChatEvent.READY on-ready)
+        ; (.register-event chat ChatEvent.RAID on-raid)
         (.register-command chat "register" on-register)
         (.register-command chat "bet" on-bet)
+        (.register-command chat "balance" on-balance)
+        (.register-command chat "resolve" resolve-bets)
         (.start chat)
         (try
           (input "Press ENTER to quit\n")
