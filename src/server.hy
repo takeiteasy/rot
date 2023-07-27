@@ -5,7 +5,8 @@
 (import re)
 (import redis)
 (import queue)
-(import threading)
+(import time)
+
 (import twitchAPI [Twitch])
 (import twitchAPI.oauth [UserAuthenticator])
 (import twitchAPI.types [AuthScope ChatEvent])
@@ -204,7 +205,11 @@
         (.zadd **db** "leaderboard:tmp" {bet.user (user-temporary-balance bet.user)}))))
   (for [balance (.zrange **db** "leaderboard:tmp" 0 -1 True)]
     (.zadd **db** "leaderboard" {bet.user (user-temporary-balance bet.user)}))
-  (clear-temporary-leaderboard))
+  (clear-temporary-leaderboard)) 
+
+(defn process-command [cmd]
+  (print cmd)
+  "{\"hello\": \"world\"}")
 
 (defn/a run [] 
   (let [twitch (await (Twitch **app-id** **app-secret**))
@@ -221,12 +226,21 @@
         (.register-command chat "balance" on-balance)
         (.start chat)
 
-        
-
-        (try
-          (input "Press ENTER to quit\n")
-          (finally
-            (.stop chat)
-            (await (.close twitch)))))  None)))
+        (let [sock (socket.socket socket.AF_INET socket.SOCK_STREAM)]
+          (sock.bind #("localhost" 5432))
+          (sock.listen 1)
+          (let [client (get (sock.accept) 0)
+                running True]
+            (while running
+              (try
+                (client.send (.encode (process-command (json.loads (.decode (client.recv 1024))))))
+                (time.sleep 0.1)
+                (except [e [socket.error json.decoder.JSONDecodeError]]
+                        (print "FATAL ERROR: " (repr e))
+                        (setv running False))
+                (except [KeyboardInterrupt]
+                        (setv running False))))))
+        (.stop chat)
+        (await (.close twitch))))))
 
 (.run asyncio (run))
