@@ -144,13 +144,12 @@
     (setv self.timer None
           self.interval interval
           self.callback callback
-          self.running False)
-    (self.start))
+          self.running False))
 
   (defn run [self]
     (setv self.running False)
     (self.start)
-    (self.callback #* self.args #** self.kwargs))
+    (self.callback))
 
   (defn start [self]
     (when (not self.running)
@@ -183,8 +182,7 @@
   (defn __init__ [self user amount numbers]
     (setv self.user user)
     (setv self.amount amount)
-    (setv self.numbers numbers)
-    (setv self.success False))
+    (setv self.numbers numbers))
 
   (defn validate [self]
     (let [balance (user-balance self.user)]
@@ -203,29 +201,54 @@
   (defn __str__ [self]
     f"Cannot place bet for `${self.amount}` you only have `${total}` available"))
 
-(defclass Table []
-  (setv states ["betting" "spin" "pause"])
+(defn next-casino-state []
+  (**casino**.table.next))
+
+(defclass Table [Task]
+  (setv states ["betting" "prespin" "spin" "pause"])
 
   (defn __init__ [self]
-    (setv self.machine (Machine :model self :states Table.states :initial "betting"))
-    (.add-transition self.machine :trigger "next" :source "betting" :dest "spin")
+    (setv self.machine (Machine :model self :states Table.states :initial "betting")
+          self.task (Task 30 next-casino-state))
+    (.add-transition self.machine :trigger "next" :source "betting" :dest "prespin")
+    (.add-transition self.machine :trigger "next" :source "prespin" :dest "spin")
     (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
-    (.add-transition self.machine :trigger "next" :source "pause" :dest "betting"))
+    (.add-transition self.machine :trigger "next" :source "pause" :dest "betting")
+    (.start self.task))
 
   (defn render-betting [self]
     (draw-text "Betting!" 5 5 20 LIME))
 
   (defn render-spin [self]
-    (draw-text "Hello, world!" 5 5 20 ORANGE))
+    (draw-text "Spinning!" 5 5 20 ORANGE))
 
   (defn render-pause [self]
-    (draw-text "Hello, world!" 5 5 20 ORANGE))
+    (draw-text "Waiting!" 5 5 20 ORANGE))
+
+  (defn update-betting [self])
+  
+  (defn update-prespin [self])
+
+  (defn update-spin [self])
+
+  (defn update-pause [self])
+
+  (defn update [self]
+    (match self.state
+      "betting" (self.update-betting)
+      "prespin" (self.update-spin)
+      "spin"    (self.update-spin)
+      "pause"   (self.update-pause)))
 
   (defn render [self]
     (match self.state
       "betting" (self.render-betting)
+      "prespin" (self.render-spin)
       "spin"    (self.render-spin)
-      "pause"   (self.render-pause))))
+      "pause"   (self.render-pause)))
+
+  (defn kill [self]
+    (.stop self.task)))
 
 (defclass Casino [Thread]
   (defn __init__ [self addr]
@@ -242,15 +265,35 @@
   (defn state [self]
     self.table.state)
 
+  (defn send-to-backend [self msg]
+    (.send self.front-client msg))
+
+  (defn send-to-frontend [self msg]
+    (.send self.back-client msg))
+  
+  (defn resolve-bets [winner]
+    (while (not (.empty **casino**.bets))
+      (let [bet (.get **casino**.bets)]
+        (when (in winner bet.numbers)
+          (.zadd self.redis "leaderboard:tmp" {bet.user (user-temporary-balance bet.user)}))))
+    (for [balance (.zrange self.redis "leaderboard:tmp" 0 -1 True)]
+      (.zadd self.redis "leaderboard" {bet.user (user-temporary-balance bet.user)}))
+    (.delete self.redis "leaderboard:tmp"))
+
   (defn run [self #* args #** kwargs]
     (while self.running
+      (for [msg (.received self.back-client)]
+        (print msg))
+      (for [msg (.received self.front-client)]
+        (print msg))
       (time.sleep 0.1)))
-  
+
   (defn kill [self]
     (setv self.running False)
     (.kill self.server)
     (.kill self.front-client)
-    (.kill self.back-client)))
+    (.kill self.back-client)
+    (.kill self.table)))
 
 (setv **casino** (Casino **addr**))
 
@@ -262,9 +305,6 @@
      (if (user-exist? ~uid)
        ~pos-body
        ~neg-body)))
-
-(defmacro clear-temporary-leaderboard []
-  `(.delete **casino**.redis "leaderboard:tmp"))
 
 (defn user-main-balance [uid]
   (if-user-exist? uid
@@ -366,15 +406,6 @@
     (except [e InvalidUser]
             (await (cmd.reply (str e))))))
 
-(defn resolve-bets [winner]
-  (while (not (.empty **casino**.bets))
-    (let [bet (.get **casino**.bets)]
-      (when (in winner bet.numbers)
-        (.zadd **casino**.redis "leaderboard:tmp" {bet.user (user-temporary-balance bet.user)}))))
-  (for [balance (.zrange **casino**.redis "leaderboard:tmp" 0 -1 True)]
-    (.zadd **casino**.redis "leaderboard" {bet.user (user-temporary-balance bet.user)}))
-  (clear-temporary-leaderboard))
-
 (defn/a run []
   (let [twitch (await (Twitch **app-id** **app-secret**))
         auth (UserAuthenticator twitch **user-scope**)
@@ -382,7 +413,7 @@
     (await (.set-user-authentication twitch (get tokens 0) **user-scope** (get tokens 1)))
     (let [chat (await (Chat twitch))]
       (do
-        (clear-temporary-leaderboard)
+        (.delete **casino**.redis "leaderboard:tmp")
         (.register-event chat ChatEvent.READY on-ready)
         ; (.register-event chat ChatEvent.RAID on-raid)
         (.register-command chat "register" on-register)
@@ -394,6 +425,7 @@
         (while (not (window-should-close))
           (begin-drawing)
           (clear-background WHITE)
+          (.update **casino**.table)
           (.render **casino**.table)
           (end-drawing))
         (.kill **casino**)
