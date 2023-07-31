@@ -1,5 +1,3 @@
-(import socket)
-(import json)
 (import threading [Timer Thread])
 (import asyncio)
 (import queue)
@@ -41,125 +39,32 @@
                (cond-regex string (cut args 2 None)))
     'None))
 
-(defclass Server [Thread]
-  (defn __init__ [self addr]
-    (Thread.__init__ self)
-    (setv self.addr addr
-          self.sock (socket.socket socket.AF_INET socket.SOCK_STREAM)
-          self.clients []
-          self.running False)
-    (.setsockopt self.sock socket.SOL_SOCKET socket.SO_REUSEADDR 1))
+(defmacro user-exist? [uid [table "leaderboard"]]
+  `(not (= (.zscore **db** ~table ~uid) None)))
 
-  (defn remove-client [self client]
-    (if (in client self.clients)
-      (.close client)
-      (.remove self.clients client)))
+(defmacro if-user-exist? [uid pos-body neg-body]
+  `(do
+     (if (user-exist? ~uid)
+       ~pos-body
+       ~neg-body)))
 
-  (defn broadcast [self sender data]
-    (for [client self.clients]
-      (when (not (= sender client))
-        (try
-          (.sendall client data)
-          (except [e Exception]
-                  (print f"ERROR: {(repr e)}")
-                  (self.remove-client client))))))
+(defn user-main-balance [uid]
+  (if-user-exist? uid
+                  (int (.zscore **db** "leaderboard" uid))
+                  (raise InvalidUser)))
 
-  (defn client-worker [self client]
-    (while self.running
-      (try
-        (let [data (.recv client 1024)]
-          (if data
-            (self.broadcast client data)
-            (time.sleep 0.1)))
-        (except [e Exception]
-                (print f"ERROR: {(repr e)}")
-                (self.remove-client client)))))
+(defn user-temporary-balance [uid]
+  (if (user-exist? uid "leaderboard:tmp")
+    (.zscore **db** "leaderboard:tmp" uid)
+    (let [balance (user-main-balance uid)]
+      (do
+        (.zadd **db** "leaderboard:tmp" {uid balance})
+        balance))))
 
-  (defn run [self #* args #** kwargs]
-    (.bind self.sock self.addr)
-    (.listen self.sock 10)
-    (setv self.running True)
-    (while self.running
-      (let [[client client-addr] (.accept self.sock)
-            thread (Thread :target self.client-worker :args #(client))]
-        (.append self.clients client)
-        (.start thread))))
-  
-  (defn kill [self]
-    (setv self.running False)
-    (.close self.sock)))
-
-(defclass Client [Thread]
-  (defn __init__ [self addr]
-    (Thread.__init__ self)
-    (setv self.addr addr
-          self.sock (socket.socket socket.AF_INET socket.SOCK_STREAM)
-          self.running False
-          self.send-queue (queue.Queue)
-          self.recv-queue (queue.Queue)))
-
-  (defn send-queue-next? [self]
-    (if (.empty self.send-queue)
-      None
-      (.get self.send-queue)))
-
-  (defn recv-queue-next? [self]
-    (if (.empty self.recv-queue)
-      None
-      (.get self.recv-queue)))
-
-  (defn received [self]
-    (let [result []
-          msg (self.recv-queue-next?)]
-      (while msg
-        (.append result msg)
-        (setv msg (self.recv-queue-next?)))
-      result))
-
-  (defn send [self msg]
-    (.put self.send-queue (.encode msg)))
-
-  (defn run [self #* args #** kwargs]
-    (.connect self.sock self.addr)
-    (setv self.running True)
-    (while self.running
-      (let [msg (self.send-queue-next?)]
-        (while msg
-          (try
-            (.sendall self.sock msg)
-            (except [e Exception]
-                    (print f"ERROR: {(repr e)}")
-                    (setv self.running False)))
-          (setv msg (self.send-queue-next?))))
-      (let [data (.recv self.sock 1024)]
-        (.put self.recv-queue (.decode data)))
-      (time.sleep 0.1)))
-
-  (defn kill [self]
-    (setv self.running False)
-    (.close self.sock)))
-
-(defclass Task []
-  (defn __init__ [self interval callback]
-    (setv self.timer None
-          self.interval interval
-          self.callback callback
-          self.running False))
-
-  (defn run [self]
-    (setv self.running False)
-    (self.start)
-    (self.callback))
-
-  (defn start [self]
-    (when (not self.running)
-      (setv self.timer (Timer self.interval self.run))
-      (.start self.timer)
-      (setv self.running True)))
-
-  (defn stop [self]
-    (.cancel self.timer)
-    (setv self.running False)))
+(defn user-balance [uid]
+  (if (= **casino**.state "betting")
+    (user-temporary-balance uid)
+    (user-main-balance uid)))
 
 (defclass InvalidBet [Exception]
   (defn __init__ [self [reason None]]
@@ -201,8 +106,39 @@
   (defn __str__ [self]
     f"Cannot place bet for `${self.amount}` you only have `${total}` available"))
 
+(defclass Task []
+  (defn __init__ [self interval callback]
+    (setv self.timer None
+          self.interval interval
+          self.callback callback
+          self.running False))
+
+  (defn run [self]
+    (setv self.running False)
+    (self.start)
+    (self.callback))
+
+  (defn start [self]
+    (when (not self.running)
+      (setv self.timer (Timer self.interval self.run))
+      (.start self.timer)
+      (setv self.running True)))
+
+  (defn stop [self]
+    (.cancel self.timer)
+    (setv self.running False)))
+
+(defn resolve-bets [winner]
+  (while (not (.empty **bets**))
+    (let [bet (.get **bets**)]
+      (when (in winner bet.numbers)
+        (.zadd **db** "leaderboard:tmp" {bet.user (user-temporary-balance bet.user)}))))
+  (for [balance (.zrange **db** "leaderboard:tmp" 0 -1 True)]
+    (.zadd **db** "leaderboard" {bet.user (user-temporary-balance bet.user)}))
+  (.delete **db** "leaderboard:tmp"))
+
 (defn next-casino-state []
-  (**casino**.table.next))
+  (**table**.next))
 
 (defclass Table [Task]
   (setv states ["betting" "prespin" "spin" "pause"])
@@ -210,119 +146,34 @@
   (defn __init__ [self]
     (setv self.machine (Machine :model self :states Table.states :initial "betting")
           self.task (Task 30 next-casino-state))
-    (.add-transition self.machine :trigger "next" :source "betting" :dest "prespin")
-    (.add-transition self.machine :trigger "next" :source "prespin" :dest "spin")
-    (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
-    (.add-transition self.machine :trigger "next" :source "pause" :dest "betting")
+    (.add-transition self.machine :trigger"next" :source "betting" :dest "prespin")
+    (.add-transition self.machine :trigger"next" :source "prespin" :dest "spin")
+    (.add-transition self.machine :trigger"next" :source "spin" :dest "pause")
+    (.add-transition self.machine :trigger"next" :source "pause" :dest "betting")
     (.start self.task))
 
   (defn render-betting [self]
     (draw-text "Betting!" 5 5 20 LIME))
 
+  (defn render-prespin [self]
+    (draw-text "Pre-spin!" 5 5 20 YELLOW))
+
   (defn render-spin [self]
     (draw-text "Spinning!" 5 5 20 ORANGE))
 
   (defn render-pause [self]
-    (draw-text "Waiting!" 5 5 20 ORANGE))
-
-  (defn update-betting [self])
-  
-  (defn update-prespin [self])
-
-  (defn update-spin [self])
-
-  (defn update-pause [self])
-
-  (defn update [self]
-    (match self.state
-      "betting" (self.update-betting)
-      "prespin" (self.update-spin)
-      "spin"    (self.update-spin)
-      "pause"   (self.update-pause)))
+    (draw-text "Waiting!" 5 5 20 RED))
 
   (defn render [self]
-    (match self.state
-      "betting" (self.render-betting)
-      "prespin" (self.render-spin)
-      "spin"    (self.render-spin)
-      "pause"   (self.render-pause)))
+    ((get [self.render-betting self.render-prespin self.render-spin self.render-pause]
+          (.index self.states self.state))))
 
   (defn kill [self]
     (.stop self.task)))
 
-(defclass Casino [Thread]
-  (defn __init__ [self addr]
-    (Thread.__init__ self)
-    (setv self.server (Server addr)
-          self.front-client (Client addr)
-          self.back-client (Client addr)
-          self.running True
-          self.table (Table)
-          self.redis (redis.Redis "localhost" 6379 0)
-          self.bets (queue.Queue))
-    (Thread.start self))
-
-  (defn state [self]
-    self.table.state)
-
-  (defn send-to-backend [self msg]
-    (.send self.front-client msg))
-
-  (defn send-to-frontend [self msg]
-    (.send self.back-client msg))
-  
-  (defn resolve-bets [winner]
-    (while (not (.empty **casino**.bets))
-      (let [bet (.get **casino**.bets)]
-        (when (in winner bet.numbers)
-          (.zadd self.redis "leaderboard:tmp" {bet.user (user-temporary-balance bet.user)}))))
-    (for [balance (.zrange self.redis "leaderboard:tmp" 0 -1 True)]
-      (.zadd self.redis "leaderboard" {bet.user (user-temporary-balance bet.user)}))
-    (.delete self.redis "leaderboard:tmp"))
-
-  (defn run [self #* args #** kwargs]
-    (while self.running
-      (for [msg (.received self.back-client)]
-        (print msg))
-      (for [msg (.received self.front-client)]
-        (print msg))
-      (time.sleep 0.1)))
-
-  (defn kill [self]
-    (setv self.running False)
-    (.kill self.server)
-    (.kill self.front-client)
-    (.kill self.back-client)
-    (.kill self.table)))
-
-(setv **casino** (Casino **addr**))
-
-(defmacro user-exist? [uid [table "leaderboard"]]
-  `(not (= (.zscore **casino**.redis ~table ~uid) None)))
-
-(defmacro if-user-exist? [uid pos-body neg-body]
-  `(do
-     (if (user-exist? ~uid)
-       ~pos-body
-       ~neg-body)))
-
-(defn user-main-balance [uid]
-  (if-user-exist? uid
-                  (int (.zscore **casino**.redis "leaderboard" uid))
-                  (raise InvalidUser)))
-
-(defn user-temporary-balance [uid]
-  (if (user-exist? uid "leaderboard:tmp")
-    (.zscore **casino**.redis "leaderboard:tmp" uid)
-    (let [balance (user-main-balance uid)]
-      (do
-        (.zadd **casino**.redis "leaderboard:tmp" {uid balance})
-        balance))))
-
-(defn user-balance [uid]
-  (if (= **casino**.state "betting")
-    (user-temporary-balance uid)
-    (user-main-balance uid)))
+(setv **db** (redis.Redis "localhost" 6379 0)
+      **bets** (queue.Queue)
+      **table** (Table))
 
 (defn/a on-ready [event]
   (print "Twitch client is ready!")
@@ -332,7 +183,7 @@
   (if-user-exist? cmd.user.id
                   (await (cmd.reply f"You're already registered..."))
                   (do
-                    (.zadd **casino**.redis "leaderboard" {cmd.user.id 1000})
+                    (.zadd **db** "leaderboard" {cmd.user.id 1000})
                     (await (cmd.reply f"You're now registered! You have a balance of $1000")))))
 
 (defn parse-bet [matches]
@@ -389,8 +240,8 @@
                       balance (user-balance cmd.user.id)]
                   (let [balance (- (.validate bet) bet.amount)]
                     (do
-                      (.put **casino**.bets bet)
-                      (.zadd **casino**.redis "leaderboard:tmp" {cmd.user.id balance})
+                      (.put **bets** bet)
+                      (.zadd **db** "leaderboard:tmp" {cmd.user.id balance})
                       (await (cmd.reply f"Bet placed `{cmd.parameter}` you have ${balance} available")))))
                 (raise (InvalidBet cmd.parameter))))
     (except [e [InvalidBet InsufficientFundsError InvalidUser]]
@@ -413,7 +264,7 @@
     (await (.set-user-authentication twitch (get tokens 0) **user-scope** (get tokens 1)))
     (let [chat (await (Chat twitch))]
       (do
-        (.delete **casino**.redis "leaderboard:tmp")
+        (.delete **db** "leaderboard:tmp")
         (.register-event chat ChatEvent.READY on-ready)
         ; (.register-event chat ChatEvent.RAID on-raid)
         (.register-command chat "register" on-register)
@@ -425,10 +276,8 @@
         (while (not (window-should-close))
           (begin-drawing)
           (clear-background WHITE)
-          (.update **casino**.table)
-          (.render **casino**.table)
+          (.render **table**)
           (end-drawing))
-        (.kill **casino**)
         (.stop chat)
         (await (.close twitch))))))
 
