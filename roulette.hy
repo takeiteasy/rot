@@ -86,7 +86,11 @@
       (let [[client client-addr] (.accept self.sock)
             thread (Thread :target self.client-worker :args #(client))]
         (.append self.clients client)
-        (.start thread)))))
+        (.start thread))))
+  
+  (defn kill [self]
+    (setv self.running False)
+    (.close self.sock)))
 
 (defclass Client [Thread]
   (defn __init__ [self addr]
@@ -132,7 +136,12 @@
           (setv msg (self.send-queue-next?))))
       (let [data (.recv self.sock 1024)]
         (.put self.recv-queue (.decode data)))
-      (time.sleep 0.1))))
+      (time.sleep 0.1)))
+
+  (defn kill [self]
+    (setv self.running False)
+    (.close self.sock)))
+
 
 (defclass Task []
   (defn __init__ [self interval callback]
@@ -326,18 +335,37 @@
   (print cmd)
   "{\"hello\": \"world\"}")
 
+(defclass Table []
+  (setv states ["betting" "spin" "pause"])
+
+  (defn __init__ [self]
+    (setv self.machine (Machine :model self :states Table.states :initial "betting"))
+    (.add-transition self.machine :trigger "next" :source "betting" :dest "spin")
+    (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
+    (.add-transition self.machine :trigger "next" :source "pause" :dest "betting")))
+
 (defclass Casino [Thread]
   (defn __init__ [self addr]
     (Thread.__init__ self)
     (setv self.server (Server addr)
           self.front-client (Client addr)
           self.back-client (Client addr)
-          self.running True)
+          self.running True
+          self.table (Table))
     (Thread.start self))
+
+  (defn state [self]
+    self.table.state)
 
   (defn run [self #* args #** kwargs]
     (while self.running
-      (time.sleep 0.1))))
+      (time.sleep 0.1)))
+  
+  (defn kill [self]
+    (setv self.running False)
+    (.kill self.server)
+    (.kill self.front-client)
+    (.kill self.back-client)))
 
 (defn/a run []
   (let [twitch (await (Twitch **app-id** **app-secret**))
@@ -359,8 +387,12 @@
         (while (not (window-should-close))
           (begin-drawing)
           (clear-background WHITE)
-          (draw-text "Hello, world!" 5 5 20 VIOLET)
+          (match (.state casino)
+            "betting" (draw-text "Betting!" 5 5 20 LIME)
+            "spin"    (draw-text "Hello, world!" 5 5 20 ORANGE)
+            "pause"   (draw-text "Hello, world!" 5 5 20 RED))
           (end-drawing))
+        (.kill casino)
         (.stop chat)
         (await (.close twitch))))))
 
