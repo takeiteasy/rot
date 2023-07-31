@@ -20,9 +20,6 @@
 (setv **app-secret** (read-file "twitch-secret.txt"))
 (setv **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT])
 (setv **host-channel** "roryb_bellows")
-(setv **db** (redis.Redis 'localhost' 6379 0))
-(setv **placing-bets** True)
-(setv **bets** (queue.Queue))
 (setv **addr** #("localhost" 5432))
 
 (defmacro unless [expr #* body]
@@ -142,7 +139,6 @@
     (setv self.running False)
     (.close self.sock)))
 
-
 (defclass Task []
   (defn __init__ [self interval callback]
     (setv self.timer None
@@ -183,36 +179,6 @@
   (defn __str__ [self]
     "You are not registered, type `!register` to start!"))
 
-(defmacro user-exist? [uid [table "leaderboard"]]
-  `(not (= (.zscore **db** ~table ~uid) None)))
-
-(defmacro if-user-exist? [uid pos-body neg-body]
-  `(do
-     (if (user-exist? ~uid)
-       ~pos-body
-       ~neg-body)))
-
-(defmacro clear-temporary-leaderboard []
-  `(.delete **db** "leaderboard:tmp"))
-
-(defn user-main-balance [uid]
-  (if-user-exist? uid
-                  (int (.zscore **db** "leaderboard" uid))
-                  (raise InvalidUser)))
-
-(defn user-temporary-balance [uid]
-  (if (user-exist? uid "leaderboard:tmp")
-    (.zscore **db** "leaderboard:tmp" uid)
-    (let [balance (user-main-balance uid)]
-      (do
-        (.zadd **db** "leaderboard:tmp" {uid balance})
-        balance))))
-
-(defn user-balance [uid]
-  (if **placing-bets**
-    (user-temporary-balance uid)
-    (user-main-balance uid)))
-
 (defclass Bet []
   (defn __init__ [self user amount numbers]
     (setv self.user user)
@@ -237,6 +203,87 @@
   (defn __str__ [self]
     f"Cannot place bet for `${self.amount}` you only have `${total}` available"))
 
+(defclass Table []
+  (setv states ["betting" "spin" "pause"])
+
+  (defn __init__ [self]
+    (setv self.machine (Machine :model self :states Table.states :initial "betting"))
+    (.add-transition self.machine :trigger "next" :source "betting" :dest "spin")
+    (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
+    (.add-transition self.machine :trigger "next" :source "pause" :dest "betting"))
+
+  (defn render-betting [self]
+    (draw-text "Betting!" 5 5 20 LIME))
+
+  (defn render-spin [self]
+    (draw-text "Hello, world!" 5 5 20 ORANGE))
+
+  (defn render-pause [self]
+    (draw-text "Hello, world!" 5 5 20 ORANGE))
+
+  (defn render [self]
+    (match self.state
+      "betting" (self.render-betting)
+      "spin"    (self.render-spin)
+      "pause"   (self.render-pause))))
+
+(defclass Casino [Thread]
+  (defn __init__ [self addr]
+    (Thread.__init__ self)
+    (setv self.server (Server addr)
+          self.front-client (Client addr)
+          self.back-client (Client addr)
+          self.running True
+          self.table (Table)
+          self.redis (redis.Redis "localhost" 6379 0)
+          self.bets (queue.Queue))
+    (Thread.start self))
+
+  (defn state [self]
+    self.table.state)
+
+  (defn run [self #* args #** kwargs]
+    (while self.running
+      (time.sleep 0.1)))
+  
+  (defn kill [self]
+    (setv self.running False)
+    (.kill self.server)
+    (.kill self.front-client)
+    (.kill self.back-client)))
+
+(setv **casino** (Casino **addr**))
+
+(defmacro user-exist? [uid [table "leaderboard"]]
+  `(not (= (.zscore **casino**.redis ~table ~uid) None)))
+
+(defmacro if-user-exist? [uid pos-body neg-body]
+  `(do
+     (if (user-exist? ~uid)
+       ~pos-body
+       ~neg-body)))
+
+(defmacro clear-temporary-leaderboard []
+  `(.delete **casino**.redis "leaderboard:tmp"))
+
+(defn user-main-balance [uid]
+  (if-user-exist? uid
+                  (int (.zscore **casino**.redis "leaderboard" uid))
+                  (raise InvalidUser)))
+
+(defn user-temporary-balance [uid]
+  (if (user-exist? uid "leaderboard:tmp")
+    (.zscore **casino**.redis "leaderboard:tmp" uid)
+    (let [balance (user-main-balance uid)]
+      (do
+        (.zadd **casino**.redis "leaderboard:tmp" {uid balance})
+        balance))))
+
+(defn user-balance [uid]
+  (if (= **casino**.state "betting")
+    (user-temporary-balance uid)
+    (user-main-balance uid)))
+
 (defn/a on-ready [event]
   (print "Twitch client is ready!")
   (await (event.chat.join-room **host-channel**)))
@@ -245,7 +292,7 @@
   (if-user-exist? cmd.user.id
                   (await (cmd.reply f"You're already registered..."))
                   (do
-                    (.zadd **db** "leaderboard" {cmd.user.id 1000})
+                    (.zadd **casino**.redis "leaderboard" {cmd.user.id 1000})
                     (await (cmd.reply f"You're now registered! You have a balance of $1000")))))
 
 (defn parse-bet [matches]
@@ -302,8 +349,8 @@
                       balance (user-balance cmd.user.id)]
                   (let [balance (- (.validate bet) bet.amount)]
                     (do
-                      (.put **bets** bet)
-                      (.zadd **db** "leaderboard:tmp" {cmd.user.id balance})
+                      (.put **casino**.bets bet)
+                      (.zadd **casino**.redis "leaderboard:tmp" {cmd.user.id balance})
                       (await (cmd.reply f"Bet placed `{cmd.parameter}` you have ${balance} available")))))
                 (raise (InvalidBet cmd.parameter))))
     (except [e [InvalidBet InsufficientFundsError InvalidUser]]
@@ -319,61 +366,21 @@
     (except [e InvalidUser]
             (await (cmd.reply (str e))))))
 
-(defn toggle-betting []
-  (setv **placing-bets** (not **placing-bets**)))
-
 (defn resolve-bets [winner]
-  (while (not (.empty **bets**))
-    (let [bet (.get **bets**)]
+  (while (not (.empty **casino**.bets))
+    (let [bet (.get **casino**.bets)]
       (when (in winner bet.numbers)
-        (.zadd **db** "leaderboard:tmp" {bet.user (user-temporary-balance bet.user)}))))
-  (for [balance (.zrange **db** "leaderboard:tmp" 0 -1 True)]
-    (.zadd **db** "leaderboard" {bet.user (user-temporary-balance bet.user)}))
+        (.zadd **casino**.redis "leaderboard:tmp" {bet.user (user-temporary-balance bet.user)}))))
+  (for [balance (.zrange **casino**.redis "leaderboard:tmp" 0 -1 True)]
+    (.zadd **casino**.redis "leaderboard" {bet.user (user-temporary-balance bet.user)}))
   (clear-temporary-leaderboard))
-
-(defn process-command [cmd]
-  (print cmd)
-  "{\"hello\": \"world\"}")
-
-(defclass Table []
-  (setv states ["betting" "spin" "pause"])
-
-  (defn __init__ [self]
-    (setv self.machine (Machine :model self :states Table.states :initial "betting"))
-    (.add-transition self.machine :trigger "next" :source "betting" :dest "spin")
-    (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
-    (.add-transition self.machine :trigger "next" :source "pause" :dest "betting")))
-
-(defclass Casino [Thread]
-  (defn __init__ [self addr]
-    (Thread.__init__ self)
-    (setv self.server (Server addr)
-          self.front-client (Client addr)
-          self.back-client (Client addr)
-          self.running True
-          self.table (Table))
-    (Thread.start self))
-
-  (defn state [self]
-    self.table.state)
-
-  (defn run [self #* args #** kwargs]
-    (while self.running
-      (time.sleep 0.1)))
-  
-  (defn kill [self]
-    (setv self.running False)
-    (.kill self.server)
-    (.kill self.front-client)
-    (.kill self.back-client)))
 
 (defn/a run []
   (let [twitch (await (Twitch **app-id** **app-secret**))
         auth (UserAuthenticator twitch **user-scope**)
         tokens (await (.authenticate auth))]
     (await (.set-user-authentication twitch (get tokens 0) **user-scope** (get tokens 1)))
-    (let [casino (Casino **addr**)
-          chat (await (Chat twitch))]
+    (let [chat (await (Chat twitch))]
       (do
         (clear-temporary-leaderboard)
         (.register-event chat ChatEvent.READY on-ready)
@@ -387,12 +394,9 @@
         (while (not (window-should-close))
           (begin-drawing)
           (clear-background WHITE)
-          (match (.state casino)
-            "betting" (draw-text "Betting!" 5 5 20 LIME)
-            "spin"    (draw-text "Hello, world!" 5 5 20 ORANGE)
-            "pause"   (draw-text "Hello, world!" 5 5 20 RED))
+          (.render **casino**.table)
           (end-drawing))
-        (.kill casino)
+        (.kill **casino**)
         (.stop chat)
         (await (.close twitch))))))
 
