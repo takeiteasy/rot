@@ -2,5 +2,7 @@
 test/
 .DS_Store
 *.py
-src/__pycache__
+__pycache__/
 *-old.*
+*.pyc
+test.hy
