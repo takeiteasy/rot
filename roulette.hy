@@ -1,11 +1,12 @@
 (import threading [Timer Thread])
 (import asyncio)
-(import queue)
+(import queue [Queue])
 (import time)
 (import math)
+(import re)
+
 (import pyray *)
 (import transitions [Machine])
-(import re)
 (import redis)
 (import twitchAPI [Twitch])
 (import twitchAPI.oauth [UserAuthenticator])
@@ -153,8 +154,8 @@
           self.spin-speed 1.0
           self.rotation 0.0
           self.camera (Camera2D)
-          self.camera.offset (Vector2 0 0)
-          self.camera.target (Vector2 0 0)
+          self.camera.target (Vector2 **half-wheel-size**.x 0)
+          self.camera.offset (Vector2 (/ **window-size**.x 2) 0)
           self.camera.rotation 0.0
           self.camera.zoom 1.0)
     (.add-transition self.machine :trigger "next" :source "spinning" :dest "slowing")
@@ -177,7 +178,7 @@
       (draw-text istr (int (- (+ x **half-wheel-size**.x) istr-width)) (int (- **half-wheel-size**.y 15)) **font-size** WHITE)))
   
   (defn render [self]
-   (setv self.camera.target.x (+ self.camera.target.x **max-wheel-speed**))
+    (setv self.camera.target.x (+ self.camera.target.x **max-wheel-speed**))
     (when (> self.camera.target.x **max-wheel-size**)
       (setv self.camera.target.x (abs (- **max-wheel-size** self.camera.target.x))))
     (begin-mode-2d self.camera)
@@ -192,14 +193,13 @@
     (end-mode-2d)))
 
 (defclass Table [Task]
-  (setv states ["betting" "prespin" "spin" "pause"])
+  (setv states ["betting" "spin" "pause"])
 
   (defn __init__ [self]
     (setv self.machine (Machine :model self :states Table.states :initial "betting")
           self.task (Task 30 self.next-casino-state)
           self.wheel (Wheel))
-    (.add-transition self.machine :trigger "next" :source "betting" :dest "prespin")
-    (.add-transition self.machine :trigger "next" :source "prespin" :dest "spin")
+    (.add-transition self.machine :trigger "next" :source "betting" :dest "spin")
     (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
     (.add-transition self.machine :trigger "next" :source "pause" :dest "betting")
     (.start self.task))
@@ -210,9 +210,6 @@
   (defn render-betting [self]
     (draw-text "Betting!" 5 5 20 LIME))
 
-  (defn render-prespin [self]
-    (draw-text "Pre-spin!" 5 5 20 YELLOW))
-
   (defn render-spin [self]
     (draw-text "Spinning!" 5 5 20 ORANGE))
 
@@ -221,7 +218,7 @@
 
   (defn render [self]
     (.render self.wheel)
-    ((get [self.render-betting self.render-prespin self.render-spin self.render-pause] (.index self.states self.state))))
+    ((get [self.render-betting self.render-spin self.render-pause] (.index self.states self.state))))
 
   (defn kill [self]
     (.stop self.task)))
@@ -323,7 +320,7 @@
         (.register-command chat "balance" on-balance)
         (.start chat) 
 
-        (init-window 640 480 "Roulette")
+        (init-window (int **window-size**.x) (int **window-size**.y) "Roulette")
         (set-target-fps 60)
         (while (not (window-should-close))
           (begin-drawing)
@@ -339,9 +336,6 @@
       **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT]
       **host-channel** "roryb_bellows"
       **addr** #("localhost" 5432)
-      **db** (redis.Redis "localhost" 6379 0)
-      **bets** (queue.Queue)
-      **table** (Table)
       **window-size** (Vector2 1920 1080)
       **wheel-numbers** [GREEN RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED]
       **wheel-size** (Vector2 100 100)
@@ -350,6 +344,10 @@
       **max-wheel-size** (* (len **wheel-numbers**) **wheel-size**.x)
       **max-visible-numbers** (math.ceil (/ **window-size**.x **wheel-size**.x))
       **visible-numbers-size** (* **max-visible-numbers** **wheel-size**.x)
-      **font-size** 32)
+      **font-size** 32
+      **db** (redis.Redis "localhost" 6379 0)
+      **bets** (Queue)
+      **table** (Table))
+
 
 (.run asyncio (run))
