@@ -2,6 +2,7 @@
 (import asyncio)
 (import queue)
 (import time)
+(import math)
 (import pyray *)
 (import transitions [Machine])
 (import re)
@@ -10,6 +11,12 @@
 (import twitchAPI.oauth [UserAuthenticator])
 (import twitchAPI.types [AuthScope ChatEvent])
 (import twitchAPI.chat [Chat EventData ChatMessage ChatSub ChatCommand])
+
+(defmacro percent [a b]
+  `(* (/ ~a ~b) 100))
+
+(defmacro neg [n]
+  `(- 0 ~n))
 
 (defmacro read-file [path]
   `(.strip (.read (open ~path "r"))))
@@ -138,45 +145,51 @@
     (.zadd **db** "leaderboard" {bet.user (user-temporary-balance bet.user)}))
   (.delete **db** "leaderboard:tmp"))
 
-(defclass Rect []
-  (defn __init__ [self [x 0] [y 0] [w 0] [h 0]]
-    (setv self.x x
-          self.y y
-          self.w w
-          self.h h)))
-
-(defclass Renderable []
-  (defn __init__ [self path [x 0] [y 0]]
-    (setv self.texture (load-texture path)
-          self.frame (Rect x y self.texture.width self.texture.height)))
-  
-  (defn render [self]
-    (draw-texture self.texture self.frame.x self.frame.y)))
-
 (defclass Wheel [Task]
   (setv states ["spinning" "slowing" "stopped"])
 
   (defn __init__ [self]
     (setv self.machine (Machine :model self :states Wheel.states :initial "spinning")
           self.spin-speed 1.0
-          self.rotation 0.0)
+          self.rotation 0.0
+          self.camera (Camera2D)
+          self.camera.offset (Vector2 0 0)
+          self.camera.target (Vector2 0 0)
+          self.camera.rotation 0.0
+          self.camera.zoom 1.0)
     (.add-transition self.machine :trigger "next" :source "spinning" :dest "slowing")
     (.add-transition self.machine :trigger "next" :source "slowing" :dest "stopped")
     (.add-transition self.machine :trigger "next" :source "stopped" :dest "spinning")
     (.add-transition self.machine :trigger "reset" :source "*" :dest "spinning")
     ; (Task.__init__ self 10 self.next-wheel-state)
-    ))
+    )
 
   (defn next-wheel-state [self]
     (self.next))
-
-  (defn update-wheel [self]
-    (match self.state
-      "spinning" (do
-                   (setv self.rotation (* self.rotation self.spin-speed)))
-      "slowing" (do
-                  (setv self.rotation (* self.rotation self.spin-speed))
-                  (setv self.spin-speed (* self.spin-speed (self.elapsed-time))))))
+  
+  (defn draw-wheel-number [self n x]
+    (let [w (int **wheel-size**.x)
+          h (int **wheel-size**.y)
+          istr (str n)
+          istr-width (/ (measure-text istr **font-size**) 2)]
+      (draw-rectangle (int x) 0 w h (get **wheel-numbers** n))
+      (draw-rectangle-lines (int x) 0 w h GRAY)
+      (draw-text istr (int (- (+ x **half-wheel-size**.x) istr-width)) (int (- **half-wheel-size**.y 15)) **font-size** WHITE)))
+  
+  (defn render [self]
+   (setv self.camera.target.x (+ self.camera.target.x **max-wheel-speed**))
+    (when (> self.camera.target.x **max-wheel-size**)
+      (setv self.camera.target.x (abs (- **max-wheel-size** self.camera.target.x))))
+    (begin-mode-2d self.camera)
+    (for [i (range 0 (len **wheel-numbers**))]
+      (self.draw-wheel-number i (* i **wheel-size**.x)))
+    (cond
+      (< self.camera.target.x (* (math.floor (/ **max-visible-numbers** 2)) **wheel-size**.x)) (for [i (range (- (len **wheel-numbers**) 1) (- (len **wheel-numbers**) **max-visible-numbers**) -1)]
+                                                                                                 (self.draw-wheel-number i (neg (* (- (len **wheel-numbers**) i) **wheel-size**.x))))
+      (> self.camera.target.x (- **max-wheel-size** (* (math.floor (/ **max-visible-numbers** 2)) **wheel-size**.x))) (for [i (range 0 **max-visible-numbers**)]
+                                                                                                                        (self.draw-wheel-number i (+ **max-wheel-size** (* i **wheel-size**.x)))))
+    (draw-line-ex (Vector2 self.camera.target.x 0) (Vector2 self.camera.target.x **wheel-size**.y) 2.0 WHITE)
+    (end-mode-2d)))
 
 (defclass Table [Task]
   (setv states ["betting" "prespin" "spin" "pause"])
@@ -184,12 +197,7 @@
   (defn __init__ [self]
     (setv self.machine (Machine :model self :states Table.states :initial "betting")
           self.task (Task 30 self.next-casino-state)
-          self.wheel (Wheel)
-          self.camera (Camera2D)
-          self.camera.offset (Vector2 0 0)
-          self.camera.target (Vector2 0, 0)
-          self.camera.rotation 0.0
-          self.camera.zoom 1.0)
+          self.wheel (Wheel))
     (.add-transition self.machine :trigger "next" :source "betting" :dest "prespin")
     (.add-transition self.machine :trigger "next" :source "prespin" :dest "spin")
     (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
@@ -200,7 +208,6 @@
     (**table**.next))
 
   (defn render-betting [self]
-    
     (draw-text "Betting!" 5 5 20 LIME))
 
   (defn render-prespin [self]
@@ -213,10 +220,8 @@
     (draw-text "Waiting!" 5 5 20 RED))
 
   (defn render [self]
-    (begin-mode-2d self.camera)
-    ((get [self.render-betting self.render-prespin self.render-spin self.render-pause]
-          (.index self.states self.state)))
-    (end-mode-2d))
+    (.render self.wheel)
+    ((get [self.render-betting self.render-prespin self.render-spin self.render-pause] (.index self.states self.state))))
 
   (defn kill [self]
     (.stop self.task)))
@@ -336,6 +341,15 @@
       **addr** #("localhost" 5432)
       **db** (redis.Redis "localhost" 6379 0)
       **bets** (queue.Queue)
-      **table** (Table))
+      **table** (Table)
+      **window-size** (Vector2 1920 1080)
+      **wheel-numbers** [GREEN RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED]
+      **wheel-size** (Vector2 100 100)
+      **half-wheel-size** (Vector2 (/ **wheel-size**.x 2) (/ **wheel-size**.y 2))
+      **max-wheel-speed** 50.0
+      **max-wheel-size** (* (len **wheel-numbers**) **wheel-size**.x)
+      **max-visible-numbers** (math.ceil (/ **window-size**.x **wheel-size**.x))
+      **visible-numbers-size** (* **max-visible-numbers** **wheel-size**.x)
+      **font-size** 32)
 
 (.run asyncio (run))
