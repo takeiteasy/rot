@@ -14,12 +14,6 @@
 (defmacro read-file [path]
   `(.strip (.read (open ~path "r"))))
 
-(setv **app-id** (read-file "twitch-token.txt"))
-(setv **app-secret** (read-file "twitch-secret.txt"))
-(setv **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT])
-(setv **host-channel** "roryb_bellows")
-(setv **addr** #("localhost" 5432))
-
 (defmacro unless [expr #* body]
   `(when (not ~expr)
      (do
@@ -111,10 +105,12 @@
     (setv self.timer None
           self.interval interval
           self.callback callback
-          self.running False))
+          self.running False
+          self.start-time None))
 
   (defn run [self]
-    (setv self.running False)
+    (setv self.running False
+          self.start-time (time.time))
     (self.start)
     (self.callback))
 
@@ -123,6 +119,11 @@
       (setv self.timer (Timer self.interval self.run))
       (.start self.timer)
       (setv self.running True)))
+
+  (defn elapsed-time [self]
+    (if self.running
+      (- (time.time) self.start-time)
+      None))
 
   (defn stop [self]
     (.cancel self.timer)
@@ -137,22 +138,69 @@
     (.zadd **db** "leaderboard" {bet.user (user-temporary-balance bet.user)}))
   (.delete **db** "leaderboard:tmp"))
 
-(defn next-casino-state []
-  (**table**.next))
+(defclass Rect []
+  (defn __init__ [self [x 0] [y 0] [w 0] [h 0]]
+    (setv self.x x
+          self.y y
+          self.w w
+          self.h h)))
+
+(defclass Renderable []
+  (defn __init__ [self path [x 0] [y 0]]
+    (setv self.texture (load-texture path)
+          self.frame (Rect x y self.texture.width self.texture.height)))
+  
+  (defn render [self]
+    (draw-texture self.texture self.frame.x self.frame.y)))
+
+(defclass Wheel [Task]
+  (setv states ["spinning" "slowing" "stopped"])
+
+  (defn __init__ [self]
+    (setv self.machine (Machine :model self :states Wheel.states :initial "spinning")
+          self.spin-speed 1.0
+          self.rotation 0.0)
+    (.add-transition self.machine :trigger "next" :source "spinning" :dest "slowing")
+    (.add-transition self.machine :trigger "next" :source "slowing" :dest "stopped")
+    (.add-transition self.machine :trigger "next" :source "stopped" :dest "spinning")
+    (.add-transition self.machine :trigger "reset" :source "*" :dest "spinning")
+    ; (Task.__init__ self 10 self.next-wheel-state)
+    ))
+
+  (defn next-wheel-state [self]
+    (self.next))
+
+  (defn update-wheel [self]
+    (match self.state
+      "spinning" (do
+                   (setv self.rotation (* self.rotation self.spin-speed)))
+      "slowing" (do
+                  (setv self.rotation (* self.rotation self.spin-speed))
+                  (setv self.spin-speed (* self.spin-speed (self.elapsed-time))))))
 
 (defclass Table [Task]
   (setv states ["betting" "prespin" "spin" "pause"])
 
   (defn __init__ [self]
     (setv self.machine (Machine :model self :states Table.states :initial "betting")
-          self.task (Task 30 next-casino-state))
-    (.add-transition self.machine :trigger"next" :source "betting" :dest "prespin")
-    (.add-transition self.machine :trigger"next" :source "prespin" :dest "spin")
-    (.add-transition self.machine :trigger"next" :source "spin" :dest "pause")
-    (.add-transition self.machine :trigger"next" :source "pause" :dest "betting")
+          self.task (Task 30 self.next-casino-state)
+          self.wheel (Wheel)
+          self.camera (Camera2D)
+          self.camera.offset (Vector2 0 0)
+          self.camera.target (Vector2 0, 0)
+          self.camera.rotation 0.0
+          self.camera.zoom 1.0)
+    (.add-transition self.machine :trigger "next" :source "betting" :dest "prespin")
+    (.add-transition self.machine :trigger "next" :source "prespin" :dest "spin")
+    (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
+    (.add-transition self.machine :trigger "next" :source "pause" :dest "betting")
     (.start self.task))
 
+  (defn next-casino-state [self]
+    (**table**.next))
+
   (defn render-betting [self]
+    
     (draw-text "Betting!" 5 5 20 LIME))
 
   (defn render-prespin [self]
@@ -165,15 +213,13 @@
     (draw-text "Waiting!" 5 5 20 RED))
 
   (defn render [self]
+    (begin-mode-2d self.camera)
     ((get [self.render-betting self.render-prespin self.render-spin self.render-pause]
-          (.index self.states self.state))))
+          (.index self.states self.state)))
+    (end-mode-2d))
 
   (defn kill [self]
     (.stop self.task)))
-
-(setv **db** (redis.Redis "localhost" 6379 0)
-      **bets** (queue.Queue)
-      **table** (Table))
 
 (defn/a on-ready [event]
   (print "Twitch client is ready!")
@@ -270,15 +316,26 @@
         (.register-command chat "register" on-register)
         (.register-command chat "bet" on-bet)
         (.register-command chat "balance" on-balance)
-        (.start chat)
+        (.start chat) 
 
         (init-window 640 480 "Roulette")
+        (set-target-fps 60)
         (while (not (window-should-close))
           (begin-drawing)
           (clear-background WHITE)
           (.render **table**)
           (end-drawing))
+        (.kill **table**)
         (.stop chat)
         (await (.close twitch))))))
+
+(setv **app-id** (read-file "twitch-token.txt")
+      **app-secret** (read-file "twitch-secret.txt")
+      **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT]
+      **host-channel** "roryb_bellows"
+      **addr** #("localhost" 5432)
+      **db** (redis.Redis "localhost" 6379 0)
+      **bets** (queue.Queue)
+      **table** (Table))
 
 (.run asyncio (run))
