@@ -153,6 +153,7 @@
 
 (defclass BetParser []
   (setv states ["ExpectAmount" "ExpectNumbers" "ExpectSecondPart"])
+
   (defn __init__ [self string]
     (setv self.input string
           self.machine (Machine :model self :states BetParser.states :initial "ExpectAmount"))
@@ -251,7 +252,7 @@
           self.camera.rotation 0.0
           self.camera.zoom 1.0))
   
-  (defn draw-wheel-number [self n x]
+  (defn draw-segment [self n x]
     (let [w (int **wheel-size**.x)
           h (int **wheel-size**.y)
           istr (str (get **wheel-numbers** n))
@@ -266,12 +267,12 @@
       (setv self.camera.target.x (abs (- **max-wheel-size** self.camera.target.x))))
     (begin-mode-2d self.camera)
     (for [i (range 0 (len **wheel-colors**))]
-      (draw-segment i (* i **wheel-size**.x)))
+      (self.draw-segment i (* i **wheel-size**.x)))
     (cond
       (< self.camera.target.x (* (math.floor (/ **max-visible-numbers** 2)) **wheel-size**.x)) (for [i (range (- (len **wheel-colors**) 1) (- (len **wheel-colors**) **max-visible-numbers**) -1)]
-                                                                                                 (draw-segment i (neg (* (- (len **wheel-colors**) i) **wheel-size**.x))))
+                                                                                                 (self.draw-segment i (neg (* (- (len **wheel-colors**) i) **wheel-size**.x))))
       (> self.camera.target.x (- **max-wheel-size** (* (math.floor (/ **max-visible-numbers** 2)) **wheel-size**.x))) (for [i (range 0 **max-visible-numbers**)]
-                                                                                                                        (draw-segment i (+ **max-wheel-size** (* i **wheel-size**.x)))))
+                                                                                                                        (self.draw-segment i (+ **max-wheel-size** (* i **wheel-size**.x)))))
     (draw-line-ex (Vector2 self.camera.target.x 0) (Vector2 self.camera.target.x **wheel-size**.y) 2.0 WHITE)
     (end-mode-2d)))
 
@@ -332,7 +333,6 @@
                   (await (cmd.reply (str e)))))
         (for [bet bets]
           (try
-            (print (str bet))
             (.validate bet)
             (.put **bets** bet)
             (except [e [InvalidBet InsufficientFundsError]]
