@@ -33,17 +33,14 @@
      (do
        ~@body)))
 
+(defmacro uniq [a]
+  `(list (set ~a)))
+
 (defmacro if-match [string pattern pos-body neg-body]
   `(let [$ (re.match ~pattern ~string)]
      (if $
        ~pos-body
        ~neg-body)))
-
-(defmacro when-macro [string pattern body]
-  `(if-match ~string ~pattern
-             (do
-               ~@body)
-             'None))
 
 (defmacro user-exist? [uid [table "leaderboard"]]
   `(not (= (.zscore **db** ~table ~uid) None)))
@@ -217,7 +214,7 @@
                                                                             3 (range 25 37))
                                    True (raise (InvalidBet)))))
           (self.FinishedBet)
-          (yield #(amount (list (set numbers))))))))
+          (yield #(amount (uniq numbers)))))))
 
 (defclass Bet []
   (defn __init__ [self user amount numbers]
@@ -310,12 +307,15 @@
   (defn __init__ [self]
     (setv
       self.machine (Machine :model self :states Table.states :initial "betting")
-      self.task (Task 10 self.next-state :start True)
+      self.task (Task 10 self.next-state)
       self.wheel (Wheel))
     (.add-transition self.machine :trigger "next" :source "betting" :dest "spinning" :before "spin_wheel")
     (.add-transition self.machine :trigger "next" :source "spinning" :dest "slowing" :before "slow_wheel")
     (.add-transition self.machine :trigger "next" :source "slowing" :dest "end" :before "new_game_task")
     (.add-transition self.machine :trigger "next" :source "end" :dest "betting" :before "start_game_task"))
+
+  (defn start [self]
+    (.start self.task))
   
   (defn spin-wheel [self]
     (setv self.task.interval 10
@@ -419,6 +419,7 @@
 
       (init-window (int **window-size**.x) (int **window-size**.y) "Twitch Roulette")
       (set-target-fps 60)
+      (.start **table**)
       ; (toggle-fullscreen)
       (while (not (window-should-close))
         (begin-drawing)
