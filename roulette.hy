@@ -36,6 +36,12 @@
 (defmacro uniq [a]
   `(list (set ~a)))
 
+(defmacro clamp [n mi ma]
+  `(max (min ~n ~ma) ~mi))
+
+(defmacro remap [v low1 high1 low2 high2]
+  `(+ ~low2 (* (- ~v ~low1) (/ (- ~high2 ~low2) (- ~high1 ~low1)))))
+
 (defmacro if-match [string pattern pos-body neg-body]
   `(let [$ (re.match ~pattern ~string)]
      (if $
@@ -253,6 +259,43 @@
     (.zadd **db** "leaderboard" {bet.user (user-temporary-balance bet.user)}))
   (.delete **db** "leaderboard:tmp"))
 
+(defclass Animation []
+  (defn __init__ [self callback timeout]
+    (setv
+      self.timeout timeout
+      self.task (Task timeout self.end)
+      self.callback callback
+      self.running False
+      self.thread None))
+  
+  (defn start-thread [self]
+    (let [t (Thread :target self.loop)]
+      (setv self.thread t)
+      (.start self.thread)))
+  
+  (defn loop [self]
+    (while self.running
+      (self.callback (.elapsed-time self.task) self.timeout)))
+  
+  (defn begin [self]
+    (if self.running
+      (do
+        (.stop self.task)
+        (setv self.running False)
+        (.begin self))
+      (do
+        (setv self.running True)
+        (.start self.task)
+        (.start-thread self))))
+  
+  (defn end [self]
+    (when self.running
+      (setv self.running False)
+      (.stop self.task))))
+
+(defmacro with-alpha [c]
+  `(color-alpha ~c self.alpha))
+
 (defclass Wheel []
   (setv states ["stopped" "spinning" "slowing"])
 
@@ -264,7 +307,8 @@
       self.camera.target (Vector2 **half-wheel-size**.x 0)
       self.camera.offset (Vector2 (/ **window-size**.x 2) 0)
       self.camera.rotation 0.0
-      self.camera.zoom 1.0)
+      self.camera.zoom 1.0
+      self.alpha 0.0)
     (.add-transition self.machine :trigger "stop" :source "*" :dest "stopped" :before "reset_speed")
     (.add-transition self.machine :trigger "reset" :source "*" :dest "stopped" :before "reset_speed_position")
     (.add-transition self.machine :trigger "start" :source "stopped" :dest "spinning")
@@ -283,9 +327,9 @@
           h (int **wheel-size**.y)
           istr (str (get **wheel-numbers** n))
           istr-width (/ (measure-text istr **font-size**) 2)]
-      (draw-rectangle (int x) 0 w h (get **wheel-colors** n))
-      (draw-rectangle-lines (int x) 0 w h GRAY)
-      (draw-text istr (int (- (+ x **half-wheel-size**.x) istr-width)) (int (- **half-wheel-size**.y 15)) **font-size** WHITE)))
+      (draw-rectangle (int x) 0 w h (with-alpha (get **wheel-colors** n)))
+      (draw-rectangle-lines (int x) 0 w h (with-alpha GRAY))
+      (draw-text istr (int (- (+ x **half-wheel-size**.x) istr-width)) (int (- **half-wheel-size**.y 15)) **font-size** (with-alpha WHITE))))
 
   (defn draw [self]
     (when (= self.state "slowing")
@@ -304,7 +348,7 @@
                                               (self.draw-segment i (neg (* (- (len **wheel-colors**) i) **wheel-size**.x))))
         (> self.camera.target.x (- **max-wheel-size** half-width)) (for [i (range 0 **max-visible-numbers**)]
                                                                      (self.draw-segment i (+ **max-wheel-size** (* i **wheel-size**.x))))))
-    (draw-line-ex (Vector2 self.camera.target.x 0) (Vector2 self.camera.target.x **wheel-size**.y) 2.0 WHITE)
+    (draw-line-ex (Vector2 self.camera.target.x 0) (Vector2 self.camera.target.x **wheel-size**.y) 2.0 (with-alpha WHITE))
     (end-mode-2d)))
 
 (defclass Table []
@@ -314,18 +358,22 @@
     (setv
       self.machine (Machine :model self :states Table.states :initial "betting")
       self.task (Task 10 self.next-state)
-      self.wheel (Wheel))
+      self.wheel (Wheel)
+      self.wheel-fade-in (Animation self.fade-wheel-in 0.5)
+      self.wheel-fade-out (Animation self.fade-wheel-out 0.5))
     (.add-transition self.machine :trigger "next" :source "betting" :dest "spinning" :before "spin_wheel")
     (.add-transition self.machine :trigger "next" :source "spinning" :dest "slowing" :before "slow_wheel")
     (.add-transition self.machine :trigger "next" :source "slowing" :dest "end" :before "new_game_task")
     (.add-transition self.machine :trigger "next" :source "end" :dest "betting" :before "start_game_task"))
-
+  
   (defn start [self]
-    (.start self.task))
+    (.start self.task)
+    (.begin self.wheel-fade-in))
   
   (defn spin-wheel [self]
-    (setv self.task.interval 10
-          self.wheel.speed **max-wheel-speed**)
+    (setv
+      self.task.interval 10
+      self.wheel.speed **max-wheel-speed**)
     (.start self.task)
     (.start self.wheel))
   
@@ -334,18 +382,27 @@
 
   (defn new-game-task [self]
     (setv self.task.interval 10)
-    (.start self.task))
+    (.start self.task)
+    (.begin self.wheel-fade-out))
   
   (defn start-game-task [self]
     (setv self.task.interval 10)
-    (.start self.task))
+    (.start self.task)
+    (.begin self.wheel-fade-in))
 
   (defn next-state [self]
     (self.next))
+  
+  (defn fade-wheel-in [self elapsed-time target-time]
+    (let [p (remap (/ elapsed-time target-time) 0.0 1.0 0.5 1.0)]
+      (setv self.wheel.alpha (clamp p 0.5 1.0))))
+  
+  (defn fade-wheel-out [self elapsed-time target-time]
+    (let [p (remap (/ elapsed-time target-time) 0.0 1.0 1.0 0.5)]
+      (setv self.wheel.alpha (clamp p 0.5 1.0))))
 
   (defn draw-betting [self]
-    (draw-text "Betting!" 5 5 20 LIME)
-    (print (.remaining-time self.task)))
+    (draw-text f"Betting! {(math.ceil (.remaining-time self.task))}" 5 5 20 LIME))
 
   (defn draw-spin [self]
     (when (= self.wheel.state "stopped")
@@ -430,7 +487,7 @@
       ; (toggle-fullscreen)
       (while (not (window-should-close))
         (begin-drawing)
-        (clear-background WHITE)
+        (clear-background BLACK)
         (.draw **table**)
         (end-drawing))
       (.kill **table**)
@@ -452,7 +509,7 @@
   **wheel-numbers** [0 32 15 19 4 21 2 25 17 34 6 27 13 36 11 30 8 23 10 5 24 16 33 1 20 14 31 9 22 18 29 7 28 12 35 3 26]
   **red** (if-color RED)
   **black** (if-color BLACK)
-  **wheel-size** (Vector2 100 100)
+  **wheel-size** (Vector2 300 300)
   **half-wheel-size** (Vector2 (/ **wheel-size**.x 2) (/ **wheel-size**.y 2))
   **max-wheel-speed** 100.0
   **max-wheel-size** (* (len **wheel-colors**) **wheel-size**.x)
