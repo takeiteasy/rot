@@ -6,6 +6,7 @@
 (import math)
 (import re)
 (import enum [Enum])
+(import random [randint])
 
 (import pyray *)
 (import transitions [Machine])
@@ -90,24 +91,29 @@
 
 (defclass InsufficientFundsError [Exception]
   (defn __init__ [self amount total]
-    (setv self.amount amount
-          self.total total)
+    (setv
+      self.amount amount
+      self.total total)
     (Exception.__init__ self))
 
   (defn __str__ [self]
     f"Cannot place bet for `${self.amount}` you only have `${total}` available"))
 
 (defclass Task []
-  (defn __init__ [self interval callback [repeating False]]
-    (setv self.timer None
+  (defn __init__ [self interval callback [start False] [repeating False]]
+    (setv
+      self.timer None
       self.interval interval
       self.callback callback
       self.running False
       self.repeating repeating
-      self.start-time None))
+      self.start-time None)
+    (when start
+      (self.start)))
 
   (defn run [self]
-    (setv self.running False
+    (setv
+      self.running False
       self.start-time (time.time))
     (self.callback)
     (when self.repeating
@@ -155,8 +161,9 @@
   (setv states ["ExpectAmount" "ExpectNumbers" "ExpectSecondPart"])
 
   (defn __init__ [self string]
-    (setv self.input string
-          self.machine (Machine :model self :states BetParser.states :initial "ExpectAmount"))
+    (setv
+      self.input string 
+      self.machine (Machine :model self :states BetParser.states :initial "ExpectAmount"))
     (.add-transition self.machine :trigger "OnAmount" :source "ExpectAmount" :dest "ExpectNumbers")
     (.add-transition self.machine :trigger "OnFirstPart" :source "ExpectNumbers" :dest "ExpectSecondPart")
     (.add-transition self.machine :trigger "OnSecondPart" :source "ExpectSecondPart" :dest "ExpectNumbers")
@@ -214,9 +221,10 @@
 
 (defclass Bet []
   (defn __init__ [self user amount numbers]
-    (setv self.user user
-          self.amount amount
-          self.numbers numbers)) 
+    (setv
+      self.user user
+      self.amount amount 
+      self.numbers numbers)) 
 
   (defn validate [self]
     (cond
@@ -243,14 +251,29 @@
   (.delete **db** "leaderboard:tmp"))
 
 (defclass Wheel []
+  (setv states ["stopped" "spinning" "slowing"])
+
   (defn __init__ [self]
-    (setv self.spin-speed 1.0
-          self.rotation 0.0
-          self.camera (Camera2D)
-          self.camera.target (Vector2 **half-wheel-size**.x 0)
-          self.camera.offset (Vector2 (/ **window-size**.x 2) 0)
-          self.camera.rotation 0.0
-          self.camera.zoom 1.0))
+    (setv
+      self.machine (Machine :model self :states Wheel.states :initial "stopped")
+      self.speed 0.0
+      self.camera (Camera2D)
+      self.camera.target (Vector2 **half-wheel-size**.x 0)
+      self.camera.offset (Vector2 (/ **window-size**.x 2) 0)
+      self.camera.rotation 0.0
+      self.camera.zoom 1.0)
+    (.add-transition self.machine :trigger "stop" :source "*" :dest "stopped" :before "reset_speed")
+    (.add-transition self.machine :trigger "reset" :source "*" :dest "stopped" :before "reset_speed_position")
+    (.add-transition self.machine :trigger "start" :source "stopped" :dest "spinning")
+    (.add-transition self.machine :trigger "slow" :source "spinning" :dest "slowing"))
+  
+  (defn reset-speed [self]
+    (setv self.speed 0.0))
+  
+  (defn reset-speed-position [self]
+    (setv
+      self.speed 0.0
+      self.camera.target (Vector2 **half-wheel-size**.x 0)))
   
   (defn draw-segment [self n x]
     (let [w (int **wheel-size**.x)
@@ -260,52 +283,80 @@
       (draw-rectangle (int x) 0 w h (get **wheel-colors** n))
       (draw-rectangle-lines (int x) 0 w h GRAY)
       (draw-text istr (int (- (+ x **half-wheel-size**.x) istr-width)) (int (- **half-wheel-size**.y 15)) **font-size** WHITE)))
-  
+
   (defn draw [self]
-    (setv self.camera.target.x (+ self.camera.target.x **max-wheel-speed**))
+    (when (= self.state "slowing")
+      (setv self.speed (- self.speed 0.5))
+      (when (<= self.speed 1)
+        (self.stop)))
+    (setv self.camera.target.x (+ self.camera.target.x self.speed))
     (when (> self.camera.target.x **max-wheel-size**)
       (setv self.camera.target.x (abs (- **max-wheel-size** self.camera.target.x))))
     (begin-mode-2d self.camera)
     (for [i (range 0 (len **wheel-colors**))]
       (self.draw-segment i (* i **wheel-size**.x)))
-    (cond
-      (< self.camera.target.x (* (math.floor (/ **max-visible-numbers** 2)) **wheel-size**.x)) (for [i (range (- (len **wheel-colors**) 1) (- (len **wheel-colors**) **max-visible-numbers**) -1)]
-                                                                                                 (self.draw-segment i (neg (* (- (len **wheel-colors**) i) **wheel-size**.x))))
-      (> self.camera.target.x (- **max-wheel-size** (* (math.floor (/ **max-visible-numbers** 2)) **wheel-size**.x))) (for [i (range 0 **max-visible-numbers**)]
-                                                                                                                        (self.draw-segment i (+ **max-wheel-size** (* i **wheel-size**.x)))))
+    (let [half-width (* (math.floor (/ **max-visible-numbers** 2)) **wheel-size**.x)]
+      (cond
+        (< self.camera.target.x half-width) (for [i (range (- (len **wheel-colors**) 1) (- (len **wheel-colors**) **max-visible-numbers**) -1)]
+                                              (self.draw-segment i (neg (* (- (len **wheel-colors**) i) **wheel-size**.x))))
+        (> self.camera.target.x (- **max-wheel-size** half-width)) (for [i (range 0 **max-visible-numbers**)]
+                                                                     (self.draw-segment i (+ **max-wheel-size** (* i **wheel-size**.x))))))
     (draw-line-ex (Vector2 self.camera.target.x 0) (Vector2 self.camera.target.x **wheel-size**.y) 2.0 WHITE)
     (end-mode-2d)))
 
 (defclass Table []
-  (setv states ["betting" "spin" "pause"])
+  (setv states ["betting" "spinning" "slowing" "end"])
 
   (defn __init__ [self]
-    (setv self.machine (Machine :model self :states Table.states :initial "betting")
-          self.task (Task 30 self.next-casino-state)
-          self.wheel (Wheel))
-    (.add-transition self.machine :trigger "next" :source "betting" :dest "spin")
-    (.add-transition self.machine :trigger "next" :source "spin" :dest "pause")
-    (.add-transition self.machine :trigger "next" :source "pause" :dest "betting")
+    (setv
+      self.machine (Machine :model self :states Table.states :initial "betting")
+      self.task (Task 10 self.next-state :start True)
+      self.wheel (Wheel))
+    (.add-transition self.machine :trigger "next" :source "betting" :dest "spinning" :before "spin_wheel")
+    (.add-transition self.machine :trigger "next" :source "spinning" :dest "slowing" :before "slow_wheel")
+    (.add-transition self.machine :trigger "next" :source "slowing" :dest "end" :before "new_game_task")
+    (.add-transition self.machine :trigger "next" :source "end" :dest "betting" :before "start_game_task"))
+  
+  (defn spin-wheel [self]
+    (setv self.task.interval 10
+          self.wheel.speed **max-wheel-speed**)
+    (.start self.task)
+    (.start self.wheel))
+  
+  (defn slow-wheel [self]
+    (.slow self.wheel))
+
+  (defn new-game-task [self]
+    (setv self.task.interval 10)
+    (.start self.task))
+  
+  (defn start-game-task [self]
+    (setv self.task.interval 10)
     (.start self.task))
 
-  (defn next-casino-state [self]
-    (**table**.next))
+  (defn next-state [self]
+    (self.next))
 
   (defn draw-betting [self]
     (draw-text "Betting!" 5 5 20 LIME))
 
   (defn draw-spin [self]
+    (when (= self.wheel.state "stopped")
+      (self.next))
     (draw-text "Spinning!" 5 5 20 ORANGE))
 
-  (defn draw-pause [self]
+  (defn draw-end [self]
     (draw-text "Waiting!" 5 5 20 RED))
 
   (defn draw [self]
     (.draw self.wheel)
-    ((get [self.draw-betting self.draw-spin self.draw-pause] (.index self.states self.state))))
+    ((get [self.draw-betting self.draw-spin self.draw-spin self.draw-end] (.index self.states self.state))))
 
   (defn kill [self]
-    (.stop self.task)))
+    (try
+      (.stop self.task)
+      (except [e Exception]
+              `()))))
 
 (defn/a on-ready [event]
   (print "Twitch client is ready!")
@@ -383,24 +434,25 @@
          :if (= y ~c)
          x))
 
-(setv **app-id** (read-file "twitch-token.txt")
-      **app-secret** (read-file "twitch-secret.txt")
-      **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT]
-      **host-channel** "roryb_bellows"
-      **window-size** (Vector2 1920 1080)
-      **wheel-colors** [GREEN RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED RED BLACK RED BLACK RED BLACK RED BLACK RED]
-      **wheel-numbers** [0 32 15 19 4 21 2 25 17 34 6 27 13 36 11 30 8 23 10 5 24 16 33 1 20 14 31 9 22 18 29 7 28 12 35 3 26]
-      **red** (if-color RED)
-      **black** (if-color BLACK) 
-      **wheel-size** (Vector2 100 100)
-      **half-wheel-size** (Vector2 (/ **wheel-size**.x 2) (/ **wheel-size**.y 2))
-      **max-wheel-speed** 10.0
-      **max-wheel-size** (* (len **wheel-colors**) **wheel-size**.x)
-      **max-visible-numbers** (math.ceil (/ **window-size**.x **wheel-size**.x))
-      **visible-numbers-size** (* **max-visible-numbers** **wheel-size**.x)
-      **font-size** 32
-      **db** (redis.Redis "localhost" 6379 0)
-      **bets** (Queue)
-      **table** (Table))
+(setv
+  **app-id** (read-file "twitch-token.txt")
+  **app-secret** (read-file "twitch-secret.txt")
+  **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT]
+  **host-channel** "roryb_bellows"
+  **window-size** (Vector2 1920 1080)
+  **wheel-colors** [GREEN RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED RED BLACK RED BLACK RED BLACK RED BLACK RED]
+  **wheel-numbers** [0 32 15 19 4 21 2 25 17 34 6 27 13 36 11 30 8 23 10 5 24 16 33 1 20 14 31 9 22 18 29 7 28 12 35 3 26]
+  **red** (if-color RED)
+  **black** (if-color BLACK)
+  **wheel-size** (Vector2 100 100)
+  **half-wheel-size** (Vector2 (/ **wheel-size**.x 2) (/ **wheel-size**.y 2))
+  **max-wheel-speed** 100.0
+  **max-wheel-size** (* (len **wheel-colors**) **wheel-size**.x)
+  **max-visible-numbers** (math.ceil (/ **window-size**.x **wheel-size**.x))
+  **visible-numbers-size** (* **max-visible-numbers** **wheel-size**.x)
+  **font-size** 32
+  **db** (redis.Redis "localhost" 6379 0)
+  **bets** (Queue)
+  **table** (Table))
 
 (.run asyncio (run))
