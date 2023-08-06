@@ -372,7 +372,7 @@
   
   (defn spin-wheel [self]
     (setv
-      self.task.interval 10
+      self.task.interval (+ **spinning-phase-min** (randint 0 **spinning-phase-max**))
       self.wheel.speed **max-wheel-speed**)
     (.start self.task)
     (.start self.wheel))
@@ -381,12 +381,12 @@
     (.slow self.wheel))
 
   (defn new-game-task [self]
-    (setv self.task.interval 10)
+    (setv self.task.interval **end-phase-timeout**)
     (.start self.task)
     (.begin self.wheel-fade-out))
   
   (defn start-game-task [self]
-    (setv self.task.interval 10)
+    (setv self.task.interval **betting-phase-timeout**)
     (.start self.task)
     (.begin self.wheel-fade-in))
 
@@ -410,7 +410,7 @@
     (draw-text "Spinning!" 5 5 20 ORANGE))
 
   (defn draw-end [self]
-    (draw-text "Waiting!" 5 5 20 RED))
+    (draw-text f"Waiting! {(math.ceil (.remaining-time self.task))}" 5 5 20 RED))
 
   (defn draw [self]
     (.draw self.wheel)
@@ -516,6 +516,10 @@
   **max-visible-numbers** (math.ceil (/ **window-size**.x **wheel-size**.x))
   **visible-numbers-size** (* **max-visible-numbers** **wheel-size**.x)
   **font-size** 32
+  **betting-phase-timeout** 30
+  **spinning-phase-min** 5
+  **spinning-phase-max** 5
+  **end-phase-timeout** 10
   **db** (redis.Redis "localhost" 6379 0)
   **bets** (Queue)
   **table** (Table))
