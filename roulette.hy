@@ -110,22 +110,28 @@
 
   (defn run [self]
     (setv
-      self.running False
-      self.start-time (time.time))
+      self.running False)
     (self.callback)
     (when self.repeating
       (self.start)))
 
   (defn start [self]
     (when (not self.running)
-      (setv self.timer (Timer self.interval self.run))
-      (.start self.timer)
-      (setv self.running True)))
+      (setv
+        self.timer (Timer self.interval self.run)
+        self.start-time (time.time)
+        self.running True)
+      (.start self.timer)))
 
   (defn elapsed-time [self]
     (if self.running
       (- (time.time) self.start-time)
-      None))
+      0))
+  
+  (defn remaining-time [self]
+    (if self.running
+      (- self.interval (self.elapsed-time))
+      0))
 
   (defn stop [self]
     (.cancel self.timer)
@@ -338,7 +344,8 @@
     (self.next))
 
   (defn draw-betting [self]
-    (draw-text "Betting!" 5 5 20 LIME))
+    (draw-text "Betting!" 5 5 20 LIME)
+    (print (.remaining-time self.task)))
 
   (defn draw-spin [self]
     (when (= self.wheel.state "stopped")
