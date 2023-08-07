@@ -150,8 +150,10 @@
       (setv self.running False)
       (.stop self.task))))
 
-(defmacro with-alpha [c]
-  `(color-alpha ~c self.alpha))
+(defmacro with-alpha [n c]
+  `(if (= self.current-number ~n)
+     ~c
+     (color-alpha ~c self.alpha)))
 
 (defclass Wheel []
   (setv states ["stopped" "spinning" "slowing"])
@@ -165,6 +167,7 @@
       self.camera.offset (Vector2 (/ **window-size**.x 2) 0)
       self.camera.rotation 0.0
       self.camera.zoom 1.0
+      self.current-number 0
       self.alpha 0.5)
     (.add-transition self.machine :trigger "stop" :source "*" :dest "stopped" :before "reset_speed")
     (.add-transition self.machine :trigger "reset" :source "*" :dest "stopped" :before "reset_speed_position")
@@ -179,24 +182,24 @@
       self.speed 0.0
       self.camera.target (Vector2 **half-wheel-size**.x 0)))
   
-  (defn draw-segment [self n x]
+  (defn draw-segment [self i x]
     (let [w (int **wheel-size**.x)
           h (int **wheel-size**.y)
-          istr (str (get **wheel-numbers** n))
-          istr-width (/ (measure-text istr **font-size**) 2)]
-      (draw-rectangle (int x) 0 w h (with-alpha (get **wheel-colors** n)))
-      (draw-rectangle-lines (int x) 0 w h (with-alpha GRAY))
-      (draw-text istr (int (- (+ x **half-wheel-size**.x) istr-width)) (int (- **half-wheel-size**.y 15)) **font-size** (with-alpha WHITE))))
+          n (get **wheel-numbers** i)
+          text (str n)]
+      (draw-rectangle (int x) 0 w h (with-alpha n (get **wheel-colors** i)))
+      (draw-rectangle-lines (int x) 0 w h (with-alpha n GRAY))
+      (draw-text text (int (- (+ x **half-wheel-size**.x) (/ (measure-text text **font-size**) 2))) (int (- **half-wheel-size**.y 15)) **font-size** (with-alpha n WHITE))))
 
   (defn draw [self]
-    (draw-text "" 5 15 20 RED)
     (when (= self.state "slowing")
-      (setv self.speed (- self.speed 0.5))
+      (setv self.speed (- self.speed 0.1))
       (when (<= self.speed 1)
         (self.stop)))
     (setv self.camera.target.x (+ self.camera.target.x self.speed))
     (when (> self.camera.target.x **max-wheel-size**)
       (setv self.camera.target.x (abs (- **max-wheel-size** self.camera.target.x))))
+    (setv self.current-number (get **wheel-numbers** (math.floor (/ self.camera.target.x **wheel-size**.x))))
     (begin-mode-2d self.camera)
     (for [i (range 0 (len **wheel-colors**))]
       (self.draw-segment i (* i **wheel-size**.x)))
@@ -206,7 +209,7 @@
                                               (self.draw-segment i (neg (* (- (len **wheel-colors**) i) **wheel-size**.x))))
         (> self.camera.target.x (- **max-wheel-size** half-width)) (for [i (range 0 **max-visible-numbers**)]
                                                                      (self.draw-segment i (+ **max-wheel-size** (* i **wheel-size**.x))))))
-    (draw-line-ex (Vector2 self.camera.target.x 0) (Vector2 self.camera.target.x **wheel-size**.y) 2.0 (with-alpha WHITE))
+    (draw-line-ex (Vector2 self.camera.target.x 0) (Vector2 self.camera.target.x **wheel-size**.y) 2.0 (with-alpha -1 WHITE))
     (end-mode-2d)))
 
 (defmacro draw-numbered-box [x y sz n]
@@ -571,7 +574,7 @@
   **table-box-size** (Vector2 125 125)
   **betting-phase-timeout** 10
   **spinning-phase-min** 5
-  **spinning-phase-max** 10
+  **spinning-phase-max** 5
   **end-phase-timeout** 5
   **db** (redis.Redis "localhost" 6379 0)
   **bets** (Queue)
