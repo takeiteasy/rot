@@ -131,7 +131,8 @@
   
   (defn loop [self]
     (while self.running
-      (self.callback (.elapsed-time self.task) self.timeout)))
+      (self.callback (.elapsed-time self.task) self.timeout)
+      (time.sleep 0.1)))
   
   (defn begin [self]
     (if self.running
@@ -188,6 +189,7 @@
       (draw-text istr (int (- (+ x **half-wheel-size**.x) istr-width)) (int (- **half-wheel-size**.y 15)) **font-size** (with-alpha WHITE))))
 
   (defn draw [self]
+    (draw-text "" 5 15 20 RED)
     (when (= self.state "slowing")
       (setv self.speed (- self.speed 0.5))
       (when (<= self.speed 1)
@@ -268,8 +270,8 @@
       self.task (Task **betting-phase-timeout** self.next-state)
       self.wheel (Wheel)
       self.table (Table)
-      self.wheel-fade-in (Animation self.fade-wheel-in 0.5)
-      self.wheel-fade-out (Animation self.fade-wheel-out 0.5))
+      self.wheel-fade-in (Animation self.fade-wheel-in 1.0)
+      self.wheel-fade-out (Animation self.fade-wheel-out 1.0))
     (.add-transition self.machine :trigger "next" :source "betting" :dest "spinning" :before "spin_wheel")
     (.add-transition self.machine :trigger "next" :source "spinning" :dest "slowing" :before "slow_wheel")
     (.add-transition self.machine :trigger "next" :source "slowing" :dest "end" :before "new_game_task")
@@ -567,10 +569,10 @@
   **visible-numbers-size** (* **max-visible-numbers** **wheel-size**.x)
   **font-size** 32
   **table-box-size** (Vector2 125 125)
-  **betting-phase-timeout** 30
+  **betting-phase-timeout** 10
   **spinning-phase-min** 5
-  **spinning-phase-max** 5
-  **end-phase-timeout** 10
+  **spinning-phase-max** 10
+  **end-phase-timeout** 5
   **db** (redis.Redis "localhost" 6379 0)
   **bets** (Queue)
   **coupier** (Croupier))
