@@ -382,11 +382,11 @@
     (Exception.__init__ self))
 
   (defn bet-format [self]
-    "!bet command format: `!bet [amount] [positions]`")
+    "!bet command format: `!bet [amount] [position]`")
 
   (defn __str__ [self]
     (if self.reason
-      (.join " -- " [f"Sorry, I can't understand \"{self.reason}\"" (self.bet-format)])
+      f"Sorry, I can't understand \"{self.reason}\" -- {self.bet-format}"
       (self.bet-format))))
 
 (defclass BetParser []
@@ -431,11 +431,11 @@
                             True (unless (= token "on")
                                          (raise (InvalidBet))))
           "ExpectSecondPart" (cond
-                               (re.match r "^col(umn)?$" token) (test-first-part 2
+                               (re.match r"^col(umn)?$" token) (test-first-part 2
                                                                  1 (range 1 37 3)
                                                                  2 (range 2 37 3)
                                                                  3 (range 3 37 3))
-                               (re.match r "^(twelve|12|dozen)$" token) (test-first-part 2
+                               (re.match r"^(twelve|12|dozen)$" token) (test-first-part 2
                                                                          1 (range 1  13)
                                                                          2 (range 13 25)
                                                                          3 (range 25 37))
