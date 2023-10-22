@@ -8,72 +8,67 @@
 (import enum [Enum])
 (import random [randint])
 
+(import pony.orm *)
 (import pyray *)
 (import transitions [Machine])
-(import redis)
 (import twitchAPI [Twitch])
 (import twitchAPI.oauth [UserAuthenticator])
 (import twitchAPI.types [AuthScope ChatEvent])
 (import twitchAPI.chat [Chat EventData ChatMessage ChatSub ChatCommand])
 
-(defmacro percent [a b]
-  `(* (/ ~a ~b) 100))
+(setv **db** (Database))
 
-(defmacro neg [n]
-  `(- 0 ~n))
+(defn connect-database []
+  (.bind **db** :provider "sqlite" :filename "roulette.db")
+  (.generate-mapping **db** :create_tables True))
 
-(defmacro zero? [x]
-  `(= ~x 0))
+(defclass Player [**db**.Entity]
+  (setv
+    id (PrimaryKey int :auto True)
+    uid (Required int :unique True)
+    balance (Required int)))
 
-(defmacro read-file [path]
-  `(.strip (.read (open ~path "r"))))
+(defmacro defn/db [name params #* body]
+  `(defn ~name ~params
+     (let [result None]
+       (with [db-session]
+         (setv result ~@body)
+         (commit))
+       result)))
+
+(defn percent [a b]
+  (* (/ a b) 100))
+
+(defn negative [n]
+  (if (< n 0)
+    n
+    (- 0 n)))
+
+(defn zero? [x]
+  (= x 0))
+
+(defn read-file [path]
+  (.strip (.read (open path "r"))))
 
 (defmacro unless [expr #* body]
   `(when (not ~expr)
      (do
        ~@body)))
 
-(defmacro uniq [a]
-  `(list (set ~a)))
+(defn uniq [a]
+  (list (set a)))
 
-(defmacro clamp [n mi ma]
-  `(max (min ~n ~ma) ~mi))
+(defn clamp [n mi ma]
+  (max (min n ma) mi))
 
-(defmacro remap [v low1 high1 low2 high2]
-  `(+ ~low2 (* (- ~v ~low1) (/ (- ~high2 ~low2) (- ~high1 ~low1)))))
+(defn remap [v low1 high1 low2 high2]
+  (+ low2 (* (- v low1) (/ (- high2 low2) (- high1 low1)))))
 
 (defmacro if-match [string pattern pos-body neg-body]
   `(let [$ (re.match ~pattern ~string)]
      (if $
        ~pos-body
        ~neg-body)))
-
-(defclass InvalidBet [Exception]
-  (defn __init__ [self [reason None]]
-    (setv self.reason reason)
-    (Exception.__init__ self))
-
-  (defn bet-format [self]
-    "!bet command format: `!bet [amount] [positions]`")
-
-  (defn __str__ [self]
-    (if self.reason
-      (.join " -- " [f"Sorry, I can't understand \"{self.reason}\"" (self.bet-format)])
-      (self.bet-format))))
-
-(defclass InvalidUser [Exception]
-  (defn __str__ [self]
-    "You are not registered, type `!register` to start!"))
-
-(defclass InsufficientFundsError [Exception]
-  (defn __init__ [self amount total]
-    (setv
-      self.amount amount
-      self.total total)
-    (Exception.__init__ self))
-
-  (defn __str__ [self]
-    f"Cannot place bet for `${self.amount}` you only have `${total}` available"))
 
 (defclass Task []
   (defn __init__ [self interval callback [start False] [repeating False]]
@@ -206,7 +201,7 @@
     (let [half-width (* (math.floor (/ **max-visible-numbers** 2)) **wheel-size**.x)]
       (cond
         (< self.camera.target.x half-width) (for [i (range (- (len **wheel-colors**) 1) (- (len **wheel-colors**) **max-visible-numbers**) -1)]
-                                              (self.draw-segment i (neg (* (- (len **wheel-colors**) i) **wheel-size**.x))))
+                                              (self.draw-segment i (negative (* (- (len **wheel-colors**) i) **wheel-size**.x))))
         (> self.camera.target.x (- **max-wheel-size** half-width)) (for [i (range 0 **max-visible-numbers**)]
                                                                      (self.draw-segment i (+ **max-wheel-size** (* i **wheel-size**.x))))))
     (draw-line-ex (Vector2 self.camera.target.x 0) (Vector2 self.camera.target.x **wheel-size**.y) 2.0 (with-alpha -1 WHITE))
@@ -338,39 +333,33 @@
   (print "Twitch client is ready!")
   (await (event.chat.join-room **host-channel**)))
 
-(defmacro user-exist? [uid [table "leaderboard"]]
-  `(not (= (.zscore **db** ~table ~uid) None)))
+(defn/db find-user [uid]
+  (.get Player :uid uid))
 
-(defmacro if-user-exist? [uid pos-body neg-body]
-  `(do
-     (if (user-exist? ~uid)
-       ~pos-body
-       ~neg-body)))
-
-(defn user-main-balance [uid]
-  (if-user-exist? uid
-                  (int (.zscore **db** "leaderboard" uid))
-                  (raise InvalidUser)))
-
-(defn user-temporary-balance [uid]
-  (if (user-exist? uid "leaderboard:tmp")
-    (.zscore **db** "leaderboard:tmp" uid)
-    (let [balance (user-main-balance uid)]
-      (do
-        (.zadd **db** "leaderboard:tmp" {uid balance})
-        balance))))
-
-(defn user-balance [uid]
-  (if (= **coupier**.state "betting")
-    (user-temporary-balance uid)
-    (user-main-balance uid)))
+(defn/db new-user [uid]
+  (Player :uid uid :balance 1000))
 
 (defn/a on-register [cmd]
-  (if-user-exist? cmd.user.id
-                  (await (cmd.reply f"You're already registered..."))
-                  (do
-                    (.zadd **db** "leaderboard" {cmd.user.id 1000})
-                    (await (cmd.reply f"You're now registered! You have a balance of $1000")))))
+  (let [player (find-user cmd.user.id)]
+    (if player
+      (await (cmd.reply "You are already registered...")) 
+      (do
+        (new-user cmd.user.id)
+        (await (cmd.reply f"You are now registered, your balance is ${**default-balance**}"))))))
+
+(defclass Bet []
+  (defn __init__ [self user amount numbers multiplier]
+    (setv
+      self.user user
+      self.amount amount
+      self.numbers numbers
+      self.multiplier multiplier))
+
+  (defn __str__ [self]
+    f"(Bet uid:{self.user} amount:{self.amount} numbers:{self.numbers} return:{(+ self.amount (* self.amount self.multiplier))})"))
+
+(defmacro return-bet [numbers multiplier]
+  `(return (Bet uid bet-amount ~numbers ~multiplier)))
 
 (defmacro set-first-part [n]
   `(do
@@ -378,149 +367,93 @@
      (self.OnFirstPart)))
 
 (defmacro valid-number? [n]
-  `(in ~n **wheel-numbers**))
-
-(defmacro fast-valid-number? [n]
   `(and (> ~n 0)
         (< (len **wheel-numbers**))))
 
-(defmacro test-first-part [#* parts]
-  `(let [n (match first-part ~@parts)]
+(defmacro test-first-part [multiplier #* parts]
+  `(let [n (match first-word ~@parts)]
     (if (not n)
       (raise (InvalidBet))
-      (do
-        (concat-numbers (list n))
-        (self.OnSecondPart)))))
+      (return-bet n ~multiplier))))
 
-(defmacro concat-numbers [body]
-  `(setv numbers (+ numbers ~body)))
+(defclass InvalidBet [Exception]
+  (defn __init__ [self [reason None]]
+    (setv self.reason reason)
+    (Exception.__init__ self))
+
+  (defn bet-format [self]
+    "!bet command format: `!bet [amount] [positions]`")
+
+  (defn __str__ [self]
+    (if self.reason
+      (.join " -- " [f"Sorry, I can't understand \"{self.reason}\"" (self.bet-format)])
+      (self.bet-format))))
 
 (defclass BetParser []
   (setv states ["ExpectAmount" "ExpectNumbers" "ExpectSecondPart"])
 
-  (defn __init__ [self string]
-    (setv
-      self.input string 
-      self.machine (Machine :model self :states BetParser.states :initial "ExpectAmount"))
+  (defn __init__ [self]
+    (setv self.machine (Machine :model self :states BetParser.states :initial "ExpectAmount"))
     (.add-transition self.machine :trigger "OnAmount" :source "ExpectAmount" :dest "ExpectNumbers")
     (.add-transition self.machine :trigger "OnFirstPart" :source "ExpectNumbers" :dest "ExpectSecondPart")
-    (.add-transition self.machine :trigger "OnSecondPart" :source "ExpectSecondPart" :dest "ExpectNumbers")
-    (.add-transition self.machine :trigger "FinishedBet" :source "ExpectNumbers" :dest "ExpectAmount"))
-
-  (defn parse [self]
-    (for [tokens (lfor x (.split self.input ",")
-                         (lfor y (.split x " ")
-                               :if y
-                               (.lower y)))]
-        (let [amount 0 numbers [] first-part None]
-          (for [token tokens]
-            (match self.state
-              "ExpectAmount" (if-match token r"^\$?(\d+)$"
-                                       (do
-                                         (setv amount (int (get $ 1)))
-                                         (self.OnAmount))
-                                       (raise InvalidBet))
-              "ExpectNumbers" (cond
-                                (re.match r"^\d+$" token) (let [t (int token)]
-                                                            (if (fast-valid-number? t)
-                                                              (.append numbers t)
-                                                              (raise (InvalidBet))))
-                                (re.match r"^(-?\d){2,4}$" token) (concat-numbers (lfor n (.split token "-")
-                                                                                        :setv i (int n)
-                                                                                        :if (fast-valid-number? i)
-                                                                                        i))
-                                (= token "red") (concat-numbers **red**)
-                                (= token "black") (concat-numbers **black**)
-                                (= token "even") (concat-numbers (list (range 2 37 2)))
-                                (= token "odd") (concat-numbers (list (range 1 37 2)))
-                                (or (= token "first")
-                                    (= token "1st")) (set-first-part 1)
-                                (or (= token "second")
-                                    (= token "2st")) (set-first-part 2)
-                                (or (= token "third")
-                                    (= token "3rd")) (set-first-part 3)
-                                True (unless (in token ["and" "or" "on"])
-                                             (raise (InvalidBet))))
-              "ExpectSecondPart" (cond
-                                   (= token "half") (test-first-part
-                                                     1 (range 1 19)
-                                                     2 (range 19 37))
-                                   (re.match r"^col(umn)?$" token) (test-first-part
-                                                                    1 (range 1 37 3)
-                                                                    2 (range 2 37 3)
-                                                                    3 (range 3 37 3))
-                                   (re.match r"^(twelve|12|dozen)$" token) (test-first-part
-                                                                            1 (range 1  13)
-                                                                            2 (range 13 25)
-                                                                            3 (range 25 37))
-                                   True (raise (InvalidBet)))))
-          (self.FinishedBet)
-          (yield #(amount (uniq numbers)))))))
-
-(defclass Bet []
-  (defn __init__ [self user amount numbers]
-    (setv
-      self.user user
-      self.amount amount 
-      self.numbers numbers)) 
-
-  (defn validate [self]
-    (cond
-      (not (user-exist? self.user)) (raise (InvalidUser))
-      (or (zero? self.amount)
-          (zero? (len self.numbers))) (raise (InvalidBet))
-      True (let [balance (user-balance self.user)]
-             (if (not balance)
-               (raise InvalidUser)
-               (if (> balance self.amount)
-                 True
-                 (raise (InsufficientFundsError self.amount balance)))))))
+    (.add-transition self.machine :trigger "OnSecondPart" :source "ExpectSecondPart" :dest "ExpectNumbers"))
   
-  (defn __str__ [self]
-    f"(Bet uid:{self.user} amount:{self.amount} numbers:{self.numbers})"))  
-
-(defn resolve-bets [winner]
-  (while (not (.empty **bets**))
-    (let [bet (.get **bets**)]
-      (when (in winner bet.numbers)
-        (.zadd **db** "leaderboard:tmp" {bet.user (user-temporary-balance bet.user)}))))
-  (for [balance (.zrange **db** "leaderboard:tmp" 0 -1 True)]
-    (.zadd **db** "leaderboard" {bet.user (user-temporary-balance bet.user)}))
-  (.delete **db** "leaderboard:tmp"))
+  (defn parse [self uid message]
+    ; TODO: Add Streets 11:1, splits 17:1, corner 8:1, 6 line 5:1
+    ; TODO: Multiple bets in one command?
+    (let [tokens (lfor token (.split message " ") :if token (.lower token))
+          bet-amount 0
+          first-word None]
+      (for [token tokens]
+        (match self.state
+          "ExpectAmount" (if-match token r"^\$?(\d+|\d{1,3}(,\d{3})*)$"
+                                   (do
+                                     (setv bet-amount (int (re.sub "[^0-9]" "" (get $ 1))))
+                                     (self.OnAmount))
+                                   (raise InvalidBet))
+          "ExpectNumbers" (cond
+                            (re.match r"^\d+$" token) (let [t (int token)]
+                                                         (if (valid-number? t)
+                                                           (return-bet [t] 35)
+                                                           (raise (InvalidBet))))
+                            (= token "red") (return-bet **red** 1)
+                            (= token "black") (return-bet **black** 1)
+                            (= token "even") (return-bet (list (range 2 37 2)) 1)
+                            (= token "odd") (return-bet (list (range 1 37 2)) 1)
+                            (= token "low") (return-bet (list (range 1 19)) 1)
+                            (= token "high") (return-bet (list (range 19 37)) 1)
+                            (or (= token "first")
+                                (= token "1st")) (set-first-part 1)
+                            (or (= token "second")
+                                (= token "2st")) (set-first-part 2)
+                            (or (= token "third")
+                                (= token "3rd")) (set-first-part 3)
+                            True (unless (= token "on")
+                                         (raise (InvalidBet))))
+          "ExpectSecondPart" (cond
+                               (re.match r "^col(umn)?$" token) (test-first-part 2
+                                                                 1 (range 1 37 3)
+                                                                 2 (range 2 37 3)
+                                                                 3 (range 3 37 3))
+                               (re.match r "^(twelve|12|dozen)$" token) (test-first-part 2
+                                                                         1 (range 1  13)
+                                                                         2 (range 13 25)
+                                                                         3 (range 25 37))
+                               True (raise (InvalidBet))))))
+      (raise (InvalidBet))))
 
 (defn/a on-bet [cmd]
+  ; TODO: Check if user has sufficient funds
+  ; TODO: Check if game is in betting state
   (when (> (len cmd.parameter) 0)
-    (try
-      (let [bets (lfor [amount numbers] (.parse (BetParser cmd.parameter)) (Bet cmd.user.id amount numbers))
-            total (sum (lfor bet bets bet.amount))
-            balance (- (user-balance cmd.user.id) total)]
+    (let [player (find-user cmd.user.id)]
+      (if player
         (try
-          (cond
-            (< balance 0) (raise (InsufficientFundsError total balance))
-            (or (zero? (len bets))
-                (zero? total)) (raise (InvalidBet)))
-          (except [e [InvalidBet InsufficientFundsError]]
+          (let [bet (.parse (BetParser) cmd.user.id cmd.parameter)]
+            (await (cmd.reply (str bet)))) ; TODO: Append bet to queue
+          (except [e InvalidBet]
                   (await (cmd.reply (str e)))))
-        (for [bet bets]
-          (try
-            (.validate bet)
-            (.put **bets** bet)
-            (except [e [InvalidBet InsufficientFundsError]]
-                    (await (cmd.reply (str e))))))
-        (.zadd **db** "leaderboard:tmp" {cmd.user.id balance})
-        (await (cmd.reply f"Bet{(if (> (len bets) 1) "s" "")} placed for ${total}! You have ${balance} remaining")))
-      (except [e [InvalidUser]]
-              (await (cmd.reply (str e)))))))
-
-(defn/a on-balance [cmd]
-  (try
-    (let [balance (user-main-balance cmd.user.id)
-          tmp-balance (user-temporary-balance cmd.user.id)]
-      (await (cmd.reply (if (= balance 0)
-                          "You're bust!"
-                          f"You have ${balance} in your account and ${tmp-balance} available"))))
-    (except [e InvalidUser]
-            (await (cmd.reply (str e))))))
+        (await (cmd.reply "You are not registered, please type `!register` to begin"))))))
 
 (defn/a run []
   (let [twitch (await (Twitch **app-id** **app-secret**))
@@ -528,12 +461,12 @@
         tokens (await (.authenticate auth))]
     (await (.set-user-authentication twitch (get tokens 0) **user-scope** (get tokens 1)))
     (let [chat (await (Chat twitch))]
-      (.delete **db** "leaderboard:tmp")
+      (connect-database)
       (.register-event chat ChatEvent.READY on-ready)
       ; (.register-event chat ChatEvent.RAID on-raid)
       (.register-command chat "register" on-register)
       (.register-command chat "bet" on-bet)
-      (.register-command chat "balance" on-balance)
+      ; (.register-command chat "balance" on-balance)
       (.start chat) 
 
       (init-window (int **window-size**.x) (int **window-size**.y) "Twitch Roulette")
@@ -545,6 +478,7 @@
         (clear-background BLACK)
         (.draw **coupier**)
         (end-drawing))
+      
       (.kill **coupier**)
       (.stop chat)
       (await (.close twitch)))))
@@ -558,7 +492,7 @@
   **app-id** (read-file "twitch-token.txt")
   **app-secret** (read-file "twitch-secret.txt")
   **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT]
-  **host-channel** "roryb_bellows"
+  **host-channel** "bellowsroryb"
   **window-size** (Vector2 1920 1080)
   **wheel-colors** [GREEN RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED RED BLACK RED BLACK RED BLACK RED BLACK RED]
   **wheel-numbers** [0 32 15 19 4 21 2 25 17 34 6 27 13 36 11 30 8 23 10 5 24 16 33 1 20 14 31 9 22 18 29 7 28 12 35 3 26]
@@ -576,7 +510,7 @@
   **spinning-phase-min** 5
   **spinning-phase-max** 5
   **end-phase-timeout** 5
-  **db** (redis.Redis "localhost" 6379 0)
+  **default-balance** 1000
   **bets** (Queue)
   **coupier** (Croupier))
 
