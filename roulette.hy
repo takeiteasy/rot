@@ -42,6 +42,30 @@
          (commit))
        result)))
 
+(defn/db find-user [uid]
+  (.get Player :uid uid))
+
+(defn/db new-user [uid]
+  (Player :uid uid :balance **default-balance**))
+
+(defn resolve-user-stakes []
+  (with [db-session]
+    (for [[k v] (.hscan-iter **cache** "stakes")]
+      (let [player (.get Player :uid (int k))]
+        (when player
+          (setv player.balance (- player.balance (int v))))))
+    (commit))
+  (clear-stakes))
+
+(defn resolve-user-bets [winner]
+  (with [db-session]
+    (while (not (.empty **bets**))
+      (let [bet (.get **bets**)
+            player (.get Player :uid bet.user)]
+        (when (and player (in winner bet.numbers))
+          (setv player.balance (+ player.balance (+ bet.amount (* bet.amount bet.multiplier)))))))
+    (commit)))
+
 (defn percent [a b]
   (* (/ a b) 100))
 
@@ -290,6 +314,7 @@
     (setv
       self.task.interval (+ **spinning-phase-min** (randint 0 **spinning-phase-max**))
       self.wheel.speed **max-wheel-speed**)
+    (resolve-user-stakes)
     (.begin self.wheel-fade-in)
     (.start self.task)
     (.start self.wheel))
@@ -320,6 +345,7 @@
 
   (defn draw-spin [self]
     (when (= self.wheel.state "stopped")
+      (resolve-user-bets self.wheel.current-number)
       (self.next))
     (draw-text "Spinning!" 5 5 20 ORANGE))
 
@@ -340,12 +366,6 @@
 (defn/a on-ready [event]
   (print "Twitch client is ready!")
   (await (event.chat.join-room **host-channel**)))
-
-(defn/db find-user [uid]
-  (.get Player :uid uid))
-
-(defn/db new-user [uid]
-  (Player :uid uid :balance 1000))
 
 (defn/a on-register [cmd]
   (let [player (find-user cmd.user.id)]
@@ -375,7 +395,7 @@
      (self.OnFirstPart)))
 
 (defmacro valid-number? [n]
-  `(and (> ~n 0)
+  `(and (>= ~n 0)
         (< (len **wheel-numbers**))))
 
 (defmacro test-first-part [multiplier #* parts]
@@ -403,8 +423,7 @@
   (defn __init__ [self]
     (setv self.machine (Machine :model self :states BetParser.states :initial "ExpectAmount"))
     (.add-transition self.machine :trigger "OnAmount" :source "ExpectAmount" :dest "ExpectNumbers")
-    (.add-transition self.machine :trigger "OnFirstPart" :source "ExpectNumbers" :dest "ExpectSecondPart")
-    (.add-transition self.machine :trigger "OnSecondPart" :source "ExpectSecondPart" :dest "ExpectNumbers"))
+    (.add-transition self.machine :trigger "OnFirstPart" :source "ExpectNumbers" :dest "ExpectSecondPart"))
   
   (defn parse [self uid message]
     ; TODO: Add Streets 11:1, splits 17:1, corner 8:1, 6 line 5:1
@@ -486,21 +505,22 @@
     f"Cannot place bet for `${self.amount}` you only have `${self.total}` available"))
 
 (defn/a on-bet [cmd]
-  ; TODO: Check if game is in betting state
   (when (> (len cmd.parameter) 0)
-    (if-valid-user cmd.user.id
-                   (try
-                     (let [bet (.parse (BetParser) cmd.user.id cmd.parameter)
-                           funds (- player.balance (current-user-stake player.uid))]
-                       (if (> bet.amount funds)
-                         (raise (InsufficientFundsError bet.amount funds))
-                         (do
-                           (append-stake player.uid bet.amount)
-                           (.put **bets** bet)
-                           (await (cmd.reply f"Your bet for ${bet.amount} has been placed!")))))
-                     (except [e [InvalidBet InsufficientFundsError]]
-                             (await (cmd.reply (str e)))))
-                   (await (cmd.reply "You are not registered, please type `!register` to begin")))))
+    (if (= **croupier**.state "betting")
+      (if-valid-user cmd.user.id
+                     (try
+                       (let [bet (.parse (BetParser) cmd.user.id cmd.parameter)
+                             funds (- player.balance (current-user-stake player.uid))]
+                         (if (> bet.amount funds)
+                           (raise (InsufficientFundsError bet.amount funds))
+                           (do
+                             (append-stake player.uid bet.amount)
+                             (.put **bets** bet)
+                             (await (cmd.reply f"Your bet for ${bet.amount} has been placed!")))))
+                       (except [e [InvalidBet InsufficientFundsError]]
+                               (await (cmd.reply (str e)))))
+                     (await (cmd.reply "You are not registered, please type `!register` to begin")))
+      (await (cmd.reply f"Sorry, can't place a bet right now!")))))
 
 (defn/a on-balance [cmd]
   (if-valid-user cmd.user.id
@@ -528,15 +548,15 @@
 
       (init-window (int **window-size**.x) (int **window-size**.y) "Twitch Roulette")
       (set-target-fps 60)
-      (.start **coupier**)
+      (.start **croupier**)
       ; (toggle-fullscreen)
       (while (not (window-should-close))
         (begin-drawing)
         (clear-background BLACK)
-        (.draw **coupier**)
+        (.draw **croupier**)
         (end-drawing))
       
-      (.kill **coupier**)
+      (.kill **croupier**)
       (.stop chat)
       (await (.close twitch)))))
 
@@ -569,6 +589,6 @@
   **end-phase-timeout** 5
   **default-balance** 1000
   **bets** (Queue)
-  **coupier** (Croupier))
+  **croupier** (Croupier))
 
 (.run asyncio (run))
