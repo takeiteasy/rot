@@ -9,6 +9,7 @@
 (import random [randint])
 
 (import pony.orm *)
+(import redis)
 (import pyray *)
 (import transitions [Machine])
 (import twitchAPI [Twitch])
@@ -16,7 +17,12 @@
 (import twitchAPI.types [AuthScope ChatEvent])
 (import twitchAPI.chat [Chat EventData ChatMessage ChatSub ChatCommand])
 
-(setv **db** (Database))
+(setv
+  **db** (Database)
+  **cache** (redis.Redis "localhost" 6379 0))
+
+(defn clear-stakes []
+  (.delete **cache** "stakes"))
 
 (defn connect-database []
   (.bind **db** :provider "sqlite" :filename "roulette.db")
@@ -44,8 +50,10 @@
     n
     (- 0 n)))
 
-(defn zero? [x]
-  (= x 0))
+(defmacro zero? [x pos-body neg-body]
+  `(if (= ~x 0)
+     ~pos-body
+     ~neg-body))
 
 (defn read-file [path]
   (.strip (.read (open path "r"))))
@@ -442,18 +450,65 @@
                                True (raise (InvalidBet))))))
       (raise (InvalidBet))))
 
+(defclass InvalidUser [Exception]
+  (defn __str__ [self]
+    "You are not registered, type `!register` to start!"))
+
+(defmacro if-valid-user [uid pos-body neg-body]
+  `(let [player (find-user ~uid)]
+     (if player
+       ~pos-body
+       ~neg-body)))
+
+(defmacro when-valid-user [uid #* body]
+  `(if-valid-user ~uid
+                  ~@body
+                  (raise InvalidUser)))
+
+(defn current-user-stake [uid]
+  (if (.hexists **cache** "stakes" uid)
+    (int (.hget **cache** "stakes" uid))
+    0))
+
+(defn append-stake [uid amount]
+  (if (.hexists **cache** "stakes" uid)
+    (.hincrby **cache** "stakes" uid amount)
+    (.hset **cache** "stakes" uid amount)))
+
+(defclass InsufficientFundsError [Exception]
+  (defn __init__ [self amount total]
+    (setv
+      self.amount amount
+      self.total total)
+    (Exception.__init__ self))
+
+  (defn __str__ [self]
+    f"Cannot place bet for `${self.amount}` you only have `${self.total}` available"))
+
 (defn/a on-bet [cmd]
-  ; TODO: Check if user has sufficient funds
   ; TODO: Check if game is in betting state
   (when (> (len cmd.parameter) 0)
-    (let [player (find-user cmd.user.id)]
-      (if player
-        (try
-          (let [bet (.parse (BetParser) cmd.user.id cmd.parameter)]
-            (await (cmd.reply (str bet)))) ; TODO: Append bet to queue
-          (except [e InvalidBet]
-                  (await (cmd.reply (str e)))))
-        (await (cmd.reply "You are not registered, please type `!register` to begin"))))))
+    (if-valid-user cmd.user.id
+                   (try
+                     (let [bet (.parse (BetParser) cmd.user.id cmd.parameter)
+                           funds (- player.balance (current-user-stake player.uid))]
+                       (if (> bet.amount funds)
+                         (raise (InsufficientFundsError bet.amount funds))
+                         (do
+                           (append-stake player.uid bet.amount)
+                           (.put **bets** bet)
+                           (await (cmd.reply f"Your bet for ${bet.amount} has been placed!")))))
+                     (except [e [InvalidBet InsufficientFundsError]]
+                             (await (cmd.reply (str e)))))
+                   (await (cmd.reply "You are not registered, please type `!register` to begin")))))
+
+(defn/a on-balance [cmd]
+  (if-valid-user cmd.user.id
+                 (let [stake (current-user-stake player.uid)]
+                   (await (cmd.reply (zero? stake
+                                            f"Your balance is ${player.balance}"
+                                            f"Your total balance is ${player.balance} with ${(- player.balance stake)} available"))))
+                 (await (cmd.reply "You are not registered, please type `!register` to begin"))))
 
 (defn/a run []
   (let [twitch (await (Twitch **app-id** **app-secret**))
@@ -462,11 +517,13 @@
     (await (.set-user-authentication twitch (get tokens 0) **user-scope** (get tokens 1)))
     (let [chat (await (Chat twitch))]
       (connect-database)
+      (clear-stakes)
+
       (.register-event chat ChatEvent.READY on-ready)
       ; (.register-event chat ChatEvent.RAID on-raid)
       (.register-command chat "register" on-register)
       (.register-command chat "bet" on-bet)
-      ; (.register-command chat "balance" on-balance)
+      (.register-command chat "balance" on-balance)
       (.start chat) 
 
       (init-window (int **window-size**.x) (int **window-size**.y) "Twitch Roulette")
