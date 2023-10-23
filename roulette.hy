@@ -34,12 +34,16 @@
     uid (Required int :unique True)
     balance (Required int)))
 
+(defmacro with-db [#* body]
+  `(with [db-session]
+     ~@body
+     (commit)))
+
 (defmacro defn/db [name params #* body]
   `(defn ~name ~params
      (let [result None]
-       (with [db-session]
-         (setv result ~@body)
-         (commit))
+       (with-db
+         (setv result ~@body))
        result)))
 
 (defn/db find-user [uid]
@@ -49,22 +53,20 @@
   (Player :uid uid :balance **default-balance**))
 
 (defn resolve-user-stakes []
-  (with [db-session]
+  (with-db
     (for [[k v] (.hscan-iter **cache** "stakes")]
       (let [player (.get Player :uid (int k))]
         (when player
-          (setv player.balance (- player.balance (int v))))))
-    (commit))
+          (setv player.balance (- player.balance (int v)))))))
   (clear-stakes))
 
 (defn resolve-user-bets [winner]
-  (with [db-session]
+  (with-db
     (while (not (.empty **bets**))
       (let [bet (.get **bets**)
             player (.get Player :uid bet.user)]
         (when (and player (in winner bet.numbers))
-          (setv player.balance (+ player.balance (+ bet.amount (* bet.amount bet.multiplier)))))))
-    (commit)))
+          (setv player.balance (+ player.balance (+ bet.amount (* bet.amount bet.multiplier)))))))))
 
 (defn percent [a b]
   (* (/ a b) 100))
