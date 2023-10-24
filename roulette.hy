@@ -267,7 +267,7 @@
     (begin-mode-2d self.camera)
     (let [ox (int (- (/ **window-size**.x 2) (/ (* **table-box-size**.x 12) 2)))
           oy (int (* **table-box-size**.y 3))]
-      (draw-numbered-box (- ox **table-box-size**.x) **table-box-size**.y (Vector2 (int **table-box-size**.x) oy) 0)
+      (self.draw-text-box (- ox **table-box-size**.x) **table-box-size**.y (Vector2 (int **table-box-size**.x) oy) "0" GREEN)
       (for [[i text] (enumerate ["1st 12" "2nd 12" "3rd 12"])]
         (let [w (* **table-box-size**.x 4)
               fw (* **table-box-size**.x 12)]
@@ -289,7 +289,7 @@
       (for [x (range 1 4)]
         (for [[i y] (enumerate (range x (+ x 34) 3))]
           (let [fx (int (+ ox (* **table-box-size**.x i)))]
-            (draw-numbered-box fx oy **table-box-size** y)))
+            (self.draw-text-box fx oy **table-box-size** (str y) (get **wheel-colors** (.index **wheel-numbers** y)))))
         (setv oy (- oy (int **table-box-size**.y)))))
     (end-mode-2d)))
 
@@ -573,7 +573,7 @@
   **user-scope** [AuthScope.CHAT_READ AuthScope.CHAT_EDIT]
   **host-channel** "bellowsroryb"
   **window-size** (Vector2 1920 1080)
-  **wheel-colors** [GREEN RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED BLACK BLACK RED BLACK RED BLACK RED BLACK RED RED BLACK RED BLACK RED BLACK RED BLACK RED]
+  **wheel-colors** [GREEN RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK RED BLACK]
   **wheel-numbers** [0 32 15 19 4 21 2 25 17 34 6 27 13 36 11 30 8 23 10 5 24 16 33 1 20 14 31 9 22 18 29 7 28 12 35 3 26]
   **red** (if-color RED)
   **black** (if-color BLACK)
