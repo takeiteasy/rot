@@ -563,9 +563,9 @@
       (await (.close twitch)))))
 
 (defmacro if-color [c]
-  `(lfor [x y] (enumerate **wheel-colors**)
-         :if (= y ~c)
-         x))
+  `(lfor [x y] (enumerate **wheel-numbers**)
+         :if (= (get **wheel-colors** x) ~c)
+         y))
 
 (setv
   **app-id** (read-file "twitch-token.txt")
