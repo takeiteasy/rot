@@ -5,6 +5,25 @@
 > [!WARNING]
 > Work in progress
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/takeiteasy/rot/master/screenshot.png">
+</p>
+
+```
+pip3 install -r requirements.txt
+redis-server &
+python3 -m hy roulette.hy
+```
+
+## Dependencies
+
+- [hylang/hy](https://github.com/hylang/hy)
+- [Teekeks/pyTwitchAPI](https://github.com/Teekeks/pyTwitchAPI)
+- [electronstudio/raylib-python-cffi](https://github.com/electronstudio/raylib-python-cffi)
+- [ponyorm/pony](https://github.com/ponyorm/pony)
+- [redis/redis-py](https://github.com/redis/redis-py)
+- [pytransitions/transitions](https://github.com/pytransitions/transitions)
+
 ## LICENSE
 
 ```
