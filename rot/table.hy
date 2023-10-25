@@ -1,6 +1,8 @@
 (import pyray *)
 (import transitions [Machine])
 (import math)
+(import threading [Timer Thread])
+(import time)
 (import rot.common *)
 
 (setv
@@ -15,6 +17,81 @@
   **visible-numbers-size** (* **max-visible-numbers** **wheel-size**.x)
   **font-size** 32
   **table-box-size** (Vector2 125 125))
+
+(defclass Task []
+  (defn __init__ [self interval callback [start False] [repeating False]]
+    (setv
+      self.timer None
+      self.interval interval
+      self.callback callback
+      self.running False
+      self.repeating repeating
+      self.start-time None)
+    (when start
+      (self.start)))
+
+  (defn run [self]
+    (setv self.running False)
+    (self.callback)
+    (when self.repeating
+      (self.start)))
+
+  (defn start [self]
+    (when (not self.running)
+      (setv
+        self.timer (Timer self.interval self.run)
+        self.start-time (time.time)
+        self.running True)
+      (.start self.timer)))
+
+  (defn elapsed-time [self]
+    (if self.running
+      (- (time.time) self.start-time)
+      0))
+
+  (defn remaining-time [self]
+    (if self.running
+      (- self.interval (self.elapsed-time))
+      0))
+
+  (defn stop [self]
+    (.cancel self.timer)
+    (setv self.running False)))
+
+(defclass Animation []
+  (defn __init__ [self callback timeout]
+    (setv
+      self.timeout timeout
+      self.task (Task timeout self.end)
+      self.callback callback
+      self.running False
+      self.thread None))
+
+  (defn start-thread [self]
+    (let [t (Thread :target self.loop)]
+      (setv self.thread t)
+      (.start self.thread)))
+
+  (defn loop [self]
+    (while self.running
+      (self.callback (.elapsed-time self.task) self.timeout)
+      (time.sleep 0.1)))
+
+  (defn begin [self]
+    (if self.running
+      (do
+        (.stop self.task)
+        (setv self.running False)
+        (.begin self))
+      (do
+        (setv self.running True)
+        (.start self.task)
+        (.start-thread self))))
+
+  (defn end [self]
+    (when self.running
+      (setv self.running False)
+      (.stop self.task))))
 
 (defmacro with-alpha [n c]
   `(if (= self.current-number ~n)

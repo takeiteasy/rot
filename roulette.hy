@@ -139,7 +139,8 @@
 
 (defmacro when-valid-user [uid #* body]
   `(if-valid-user ~uid
-                  ~@body
+                  (do
+                    ~@body)
                   (raise InvalidUser)))
 
 (defn current-user-stake [uid]
