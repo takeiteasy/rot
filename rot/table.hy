@@ -1,7 +1,6 @@
 (import pyray *)
 (import transitions [Machine])
 (import math)
-(import threading [Thread])
 (import rot.common *)
 
 (setv

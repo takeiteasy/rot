@@ -1,16 +1,11 @@
 #!/usr/bin/env hy
 (import asyncio)
 (import re)
-(import enum [Enum])
-(import random [randint])
-
 (import twitchAPI [Twitch])
 (import twitchAPI.oauth [UserAuthenticator])
 (import twitchAPI.types [AuthScope ChatEvent])
 (import twitchAPI.chat [Chat EventData ChatMessage ChatSub ChatCommand])
-
 (import rot.croupier *)
-(import rot.database *)
 
 (defmacro if-color [c]
   `(lfor [x y] (enumerate **wheel-numbers**)
